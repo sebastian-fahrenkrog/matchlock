@@ -92,6 +92,7 @@ func init() {
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
 	runCmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
+	runCmd.Flags().Bool("allow-private-ips", false, "Allow connections to private IP ranges (10/8, 172.16/12, 192.168/16)")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
@@ -165,6 +166,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	hostname, _ := cmd.Flags().GetString("hostname")
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
 	noNetwork, _ := cmd.Flags().GetBool("no-network")
+	allowPrivateIPs, _ := cmd.Flags().GetBool("allow-private-ips")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
 
@@ -327,7 +329,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Network: &api.NetworkConfig{
 			AllowedHosts:    allowHosts,
 			AddHosts:        addHosts,
-			BlockPrivateIPs: true,
+			BlockPrivateIPs: !allowPrivateIPs,
 			NoNetwork:       noNetwork,
 			Secrets:         parsedSecrets,
 			DNSServers:      dnsServers,
