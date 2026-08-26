@@ -144,6 +144,13 @@ type Secret struct {
 	Value       string   `json:"value"`
 	Placeholder string   `json:"placeholder,omitempty"`
 	Hosts       []string `json:"hosts"`
+
+	// ValueFile holds a path on the host that is read at request time instead
+	// of using Value. Value is captured once at start, which breaks for
+	// credentials that rotate while the VM runs (e.g. short-lived OAuth access
+	// tokens): the guest only ever holds the placeholder and cannot refresh
+	// anything itself. When set, this takes precedence over Value.
+	ValueFile string `json:"value_file,omitempty"`
 }
 
 type VFSConfig struct {

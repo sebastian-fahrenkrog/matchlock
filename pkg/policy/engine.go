@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
@@ -18,6 +20,18 @@ type Engine struct {
 	placeholders map[string]string
 	networkRules []compiledNetworkRule
 	networkHook  networkHookInvoker
+
+	// Eigener Mutex, weil OnRequest e.mu bereits als RLock hält.
+	fileMu    sync.Mutex
+	fileCache map[string]cachedSecret
+}
+
+// cachedSecret vermeidet, bei jedem Request die Platte anzufassen; die Datei
+// wird nur neu gelesen, wenn sich mtime oder Größe geändert haben.
+type cachedSecret struct {
+	value   string
+	modTime time.Time
+	size    int64
 }
 
 func NewEngine(config *api.NetworkConfig) *Engine {
@@ -30,6 +44,7 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 		placeholders: make(map[string]string),
 		networkRules: compileNetworkRules(config.Interception),
 		networkHook:  newNetworkHookInvoker(config),
+		fileCache:    make(map[string]cachedSecret),
 	}
 
 	for name, secret := range config.Secrets {
@@ -37,6 +52,7 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 			placeholder := generatePlaceholder()
 			config.Secrets[name] = api.Secret{
 				Value:       secret.Value,
+				ValueFile:   secret.ValueFile,
 				Placeholder: placeholder,
 				Hosts:       secret.Hosts,
 			}
@@ -213,7 +229,13 @@ func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error
 			}
 			continue
 		}
-		e.replaceInRequest(req, secret.Placeholder, secret.Value)
+		value := e.resolveValue(name, secret)
+		if value == "" {
+			// Lieber den Platzhalter rausgehen lassen und ein 401 kassieren als
+			// still ein leeres Credential einzusetzen.
+			continue
+		}
+		e.replaceInRequest(req, secret.Placeholder, value)
 	}
 
 	return req, nil
@@ -225,6 +247,42 @@ func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string)
 
 	host = strings.Split(host, ":")[0]
 	return e.applyAfterNetworkRules(resp, req, host)
+}
+
+// resolveValue liefert den aktuellen Wert eines Secrets. Bei dateibasierten
+// Secrets wird die Datei neu gelesen, sobald sie sich geändert hat — ein
+// rotiertes Credential wirkt damit ohne Neustart der VM. Wird die Datei
+// unlesbar, bleibt der zuletzt gelesene Wert stehen: ein kurzzeitig fehlender
+// Pfad soll keinen laufenden Agenten abschiessen.
+func (e *Engine) resolveValue(name string, secret api.Secret) string {
+	if secret.ValueFile == "" {
+		return secret.Value
+	}
+
+	e.fileMu.Lock()
+	defer e.fileMu.Unlock()
+
+	cached, hasCached := e.fileCache[name]
+
+	info, err := os.Stat(secret.ValueFile)
+	if err != nil {
+		return cached.value
+	}
+	if hasCached && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+		return cached.value
+	}
+
+	content, err := os.ReadFile(secret.ValueFile)
+	if err != nil {
+		return cached.value
+	}
+	value := strings.TrimSpace(string(content))
+	if value == "" {
+		return cached.value
+	}
+
+	e.fileCache[name] = cachedSecret{value: value, modTime: info.ModTime(), size: info.Size()}
+	return value
 }
 
 func (e *Engine) isSecretAllowedForHost(secretName, host string) bool {

@@ -56,6 +56,7 @@ Secrets (--secret):
 	Custom placeholders:
 	    --secret-placeholder NAME=value   Override the in-VM placeholder value
 	    --secret-file /path/to/secrets.json  Load full secret definitions from JSON
+	    --secret-from-file NAME=/path@hosts  Read the value per request (rotating credentials)
 
 	Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
 
@@ -123,6 +124,8 @@ func init() {
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
 	runCmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
 	runCmd.Flags().Bool("network-intercept", false, "Force network interception proxy/stack even when allow-list and secrets are empty")
+	runCmd.Flags().Bool("allow-private-ips", false, "Allow connections to private IP ranges (10/8, 172.16/12, 192.168/16)")
+	runCmd.Flags().StringSlice("secret-from-file", nil, "Secret whose value is read from a file at request time (NAME=/path/to/file@host1,host2)")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Float64("cpus", float64(api.DefaultCPUs), "Number of CPUs (supports fractional values, e.g. 0.5)")
@@ -219,6 +222,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
 	noNetwork, _ := cmd.Flags().GetBool("no-network")
 	networkIntercept, _ := cmd.Flags().GetBool("network-intercept")
+	allowPrivateIPs, _ := cmd.Flags().GetBool("allow-private-ips")
+	secretFromFiles, _ := cmd.Flags().GetStringSlice("secret-from-file")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
 
@@ -368,7 +373,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		extraDisks = append(extraDisks, diskMount)
 	}
 
-	parsedSecrets, err := parseRunSecrets(secrets, secretPlaceholders, secretFile)
+	parsedSecrets, err := parseRunSecrets(secrets, secretPlaceholders, secretFile, secretFromFiles)
 	if err != nil {
 		return err
 	}
@@ -407,7 +412,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Network: &api.NetworkConfig{
 			AllowedHosts:    allowHosts,
 			AddHosts:        addHosts,
-			BlockPrivateIPs: true,
+			BlockPrivateIPs: !allowPrivateIPs,
 			NoNetwork:       noNetwork,
 			Intercept:       networkIntercept,
 			Secrets:         parsedSecrets,
@@ -558,7 +563,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func parseRunSecrets(secretSpecs, placeholderSpecs []string, secretFile string) (map[string]api.Secret, error) {
+func parseRunSecrets(secretSpecs, placeholderSpecs []string, secretFile string, secretFromFileSpecs []string) (map[string]api.Secret, error) {
 	parsedSecrets := make(map[string]api.Secret)
 
 	if secretFile != "" {
@@ -575,6 +580,19 @@ func parseRunSecrets(secretSpecs, placeholderSpecs []string, secretFile string) 
 		name, secret, err := api.ParseSecret(s)
 		if err != nil {
 			return nil, errx.With(ErrInvalidSecret, " %q: %v", s, err)
+		}
+		parsedSecrets[name] = secret
+	}
+
+	// Dateibasierte Secrets: der Wert wird pro Request gelesen, nicht beim Start
+	// eingefroren. Für Credentials, die während der Laufzeit rotieren.
+	for _, s := range secretFromFileSpecs {
+		name, secret, err := api.ParseSecretFile(s)
+		if err != nil {
+			return nil, errx.With(ErrInvalidSecret, " %q: %v", s, err)
+		}
+		if _, dup := parsedSecrets[name]; dup {
+			return nil, errx.With(ErrInvalidSecret, " %q: also given via --secret", name)
 		}
 		parsedSecrets[name] = secret
 	}

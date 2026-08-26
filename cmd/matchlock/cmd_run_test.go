@@ -238,7 +238,7 @@ func TestParseRunSecretsWithPlaceholderOverride(t *testing.T) {
 	secrets, err := parseRunSecrets(
 		[]string{"GH_TOKEN=gho_real_token@github.com"},
 		[]string{"GH_TOKEN=gho_sandbox_placeholder"},
-		"",
+		"", nil,
 	)
 	require.NoError(t, err)
 	require.Contains(t, secrets, "GH_TOKEN")
@@ -285,7 +285,7 @@ func TestParseRunSecretsLoadsSecretFile(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0644))
 
-	secrets, err := parseRunSecrets(nil, nil, path)
+	secrets, err := parseRunSecrets(nil, nil, path, nil)
 	require.NoError(t, err)
 	require.Contains(t, secrets, "GH_TOKEN")
 	assert.Equal(t, "gho_real_token", secrets["GH_TOKEN"].Value)
@@ -294,7 +294,7 @@ func TestParseRunSecretsLoadsSecretFile(t *testing.T) {
 }
 
 func TestParseRunSecretsRejectsUnknownPlaceholderReference(t *testing.T) {
-	_, err := parseRunSecrets(nil, []string{"GH_TOKEN=gho_sandbox_placeholder"}, "")
+	_, err := parseRunSecrets(nil, []string{"GH_TOKEN=gho_sandbox_placeholder"}, "", nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidSecret)
 	assert.Contains(t, err.Error(), "unknown secret")
@@ -310,7 +310,7 @@ func TestParseRunSecretsRejectsOverlappingPlaceholderValues(t *testing.T) {
 			"A=foo",
 			"B=foobar",
 		},
-		"",
+		"", nil,
 	)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidSecret)
@@ -328,7 +328,7 @@ func TestParseRunSecretsRejectsPlaceholderOverlapWithGeneratedFormat(t *testing.
 		[]string{
 			"A=SECRET",
 		},
-		"",
+		"", nil,
 	)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidSecret)

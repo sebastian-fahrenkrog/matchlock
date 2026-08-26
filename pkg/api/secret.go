@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -48,6 +49,53 @@ func ParseSecret(s string) (string, Secret, error) {
 		Value: value,
 		Hosts: hosts,
 	}, nil
+}
+
+// ParseSecretFile parses a secret string in the format "NAME=/path/to/file@host1,host2".
+// The file is read at request time rather than at start, so a value that rotates
+// during the VM's lifetime stays current. The file must exist and be non-empty
+// when the sandbox starts — a typo in the path should fail loudly here and not
+// silently produce requests with an empty credential.
+func ParseSecretFile(s string) (string, Secret, error) {
+	atIdx := strings.LastIndex(s, "@")
+	if atIdx == -1 {
+		return "", Secret{}, fmt.Errorf("missing @hosts (format: NAME=/path/to/file@host1,host2)")
+	}
+
+	hosts, err := parseSecretHosts(s[atIdx+1:])
+	if err != nil {
+		return "", Secret{}, err
+	}
+
+	nameValue := s[:atIdx]
+	eqIdx := strings.Index(nameValue, "=")
+	if eqIdx == -1 {
+		return "", Secret{}, fmt.Errorf("missing =path (format: NAME=/path/to/file@host1,host2)")
+	}
+
+	name := strings.TrimSpace(nameValue[:eqIdx])
+	path := strings.TrimSpace(nameValue[eqIdx+1:])
+	if name == "" {
+		return "", Secret{}, fmt.Errorf("secret name cannot be empty")
+	}
+	if path == "" {
+		return "", Secret{}, fmt.Errorf("secret file path cannot be empty")
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", Secret{}, fmt.Errorf("resolve %q: %w", path, err)
+	}
+
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		return "", Secret{}, fmt.Errorf("read %q: %w", abs, err)
+	}
+	if len(strings.TrimSpace(string(content))) == 0 {
+		return "", Secret{}, fmt.Errorf("secret file %q is empty", abs)
+	}
+
+	return name, Secret{ValueFile: abs, Hosts: hosts}, nil
 }
 
 // ParseSecretPlaceholder parses a placeholder override in the format
