@@ -21,6 +21,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/audit"
 	"github.com/jingkaihe/matchlock/pkg/image"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
@@ -57,6 +58,9 @@ Secrets (--secret):
 	    --secret-placeholder NAME=value   Override the in-VM placeholder value
 	    --secret-file /path/to/secrets.json  Load full secret definitions from JSON
 	    --secret-from-file NAME=/path@hosts  Read the value per request (rotating credentials)
+
+Request audit:
+	    --audit-db /path/to/audit.db   Record every outbound request into SQLite
 
 	Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
 
@@ -126,6 +130,7 @@ func init() {
 	runCmd.Flags().Bool("network-intercept", false, "Force network interception proxy/stack even when allow-list and secrets are empty")
 	runCmd.Flags().Bool("allow-private-ips", false, "Allow connections to private IP ranges (10/8, 172.16/12, 192.168/16)")
 	runCmd.Flags().StringSlice("secret-from-file", nil, "Secret whose value is read from a file at request time (NAME=/path/to/file@host1,host2)")
+	runCmd.Flags().String("audit-db", "", "Record every outbound request into this SQLite file (method, host, url, status, bytes, duration, blocked)")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Float64("cpus", float64(api.DefaultCPUs), "Number of CPUs (supports fractional values, e.g. 0.5)")
@@ -224,6 +229,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	networkIntercept, _ := cmd.Flags().GetBool("network-intercept")
 	allowPrivateIPs, _ := cmd.Flags().GetBool("allow-private-ips")
 	secretFromFiles, _ := cmd.Flags().GetStringSlice("secret-from-file")
+	auditDB, _ := cmd.Flags().GetString("audit-db")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
 
@@ -443,6 +449,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return errors.Join(errx.Wrap(ErrStartSandbox, err), errx.Wrap(ErrCloseSandbox, closeErr))
 		}
 		return errx.Wrap(ErrStartSandbox, err)
+	}
+
+	// Ausgehende Requests mitschreiben. Der Proxy sieht sie ohnehin; ohne
+	// Mitschrift ist diese Sicht nach dem Ende der VM verloren.
+	if auditDB != "" {
+		auditLog, auditErr := audit.Open(auditDB, sb.ID(), imageName, workspace, strings.Join(resolvedCommand, " "))
+		if auditErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: audit log disabled: %v\n", auditErr)
+		} else {
+			defer auditLog.Close()
+			go auditLog.Consume(ctx, sb.Events())
+		}
 	}
 
 	// Start exec relay server so `matchlock exec` can connect from another process
