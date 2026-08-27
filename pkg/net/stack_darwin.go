@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/audit"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -66,6 +67,7 @@ type Config struct {
 	Events     chan api.Event
 	CAPool     *CAPool
 	DNSServers []string
+	Recorder   *audit.Recorder
 }
 
 // writeBufPool provides reusable buffers for serializing outbound packets
@@ -319,6 +321,9 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 	}
 
 	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool)
+	if cfg.Recorder != nil {
+		ns.interceptor.SetRecorder(cfg.Recorder)
+	}
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)

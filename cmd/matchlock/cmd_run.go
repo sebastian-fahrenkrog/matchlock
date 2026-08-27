@@ -61,6 +61,7 @@ Secrets (--secret):
 
 Request audit:
 	    --audit-db /path/to/audit.db   Record every outbound request into SQLite
+	    --record /path/to/requests.jsonl  Full exchanges (headers, bodies) for filtering and replay
 
 	Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
 
@@ -131,6 +132,7 @@ func init() {
 	runCmd.Flags().Bool("allow-private-ips", false, "Allow connections to private IP ranges (10/8, 172.16/12, 192.168/16)")
 	runCmd.Flags().StringSlice("secret-from-file", nil, "Secret whose value is read from a file at request time (NAME=/path/to/file@host1,host2)")
 	runCmd.Flags().String("audit-db", "", "Record every outbound request into this SQLite file (method, host, url, status, bytes, duration, blocked)")
+	runCmd.Flags().String("record", "", "Record full request/response exchanges as JSONL (headers and bodies, credentials stay placeholders)")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Float64("cpus", float64(api.DefaultCPUs), "Number of CPUs (supports fractional values, e.g. 0.5)")
@@ -230,6 +232,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	allowPrivateIPs, _ := cmd.Flags().GetBool("allow-private-ips")
 	secretFromFiles, _ := cmd.Flags().GetStringSlice("secret-from-file")
 	auditDB, _ := cmd.Flags().GetString("audit-db")
+	recordPath, _ := cmd.Flags().GetString("record")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
 
@@ -419,6 +422,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			AllowedHosts:    allowHosts,
 			AddHosts:        addHosts,
 			BlockPrivateIPs: !allowPrivateIPs,
+			RecordPath:      recordPath,
 			NoNetwork:       noNetwork,
 			Intercept:       networkIntercept,
 			Secrets:         parsedSecrets,

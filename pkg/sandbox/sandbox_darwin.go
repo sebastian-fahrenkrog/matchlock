@@ -14,6 +14,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/audit"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
@@ -297,6 +298,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			return nil, ErrNetworkFile
 		}
 
+		// Vollständiger Mitschnitt, wenn gewünscht. Der Rekorder lebt auf dem
+		// Host; in die VM kommt davon nichts.
+		var recorder *audit.Recorder
+		if config.Network.RecordPath != "" {
+			recorder, err = audit.NewRecorder(config.Network.RecordPath, id)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: request recording disabled: %v\n", err)
+				recorder = nil
+			}
+		}
+
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
 			File:       networkFile,
 			GatewayIP:  gatewayIP,
@@ -306,6 +318,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Events:     events,
 			CAPool:     caPool,
 			DNSServers: config.Network.GetDNSServers(),
+			Recorder:   recorder,
 		})
 		if err != nil {
 			machine.Close(ctx)

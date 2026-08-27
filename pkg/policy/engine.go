@@ -285,6 +285,40 @@ func (e *Engine) resolveValue(name string, secret api.Secret) string {
 	return value
 }
 
+// Redact ersetzt jeden echten Secret-Wert durch seinen Platzhalter.
+//
+// Nötig für Mitschnitte: der Request geht mit dem echten Wert raus, und manche
+// Antworten spiegeln ihn zurück (httpbin tut es, Fehlermeldungen tun es, Echo-
+// Endpunkte sowieso). Ohne diesen Schritt wäre der Mitschnitt genau die Stelle,
+// an der die Credentials doch auf der Platte landen.
+func (e *Engine) Redact(s string) string {
+	if s == "" {
+		return s
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, secret := range e.config.Secrets {
+		if secret.Placeholder == "" {
+			continue
+		}
+		value := secret.Value
+		if secret.ValueFile != "" {
+			// Der aktuelle Wert steht in der Datei; ohne ihn wüssten wir nicht,
+			// wonach wir suchen.
+			if data, err := os.ReadFile(secret.ValueFile); err == nil {
+				value = strings.TrimSpace(string(data))
+			}
+		}
+		if value == "" {
+			continue
+		}
+		s = strings.ReplaceAll(s, value, secret.Placeholder)
+	}
+	return s
+}
+
 func (e *Engine) isSecretAllowedForHost(secretName, host string) bool {
 	secret, ok := e.config.Secrets[secretName]
 	if !ok {

@@ -96,6 +96,9 @@ type NetworkConfig struct {
 	DNSServers      []string                   `json:"dns_servers,omitempty"`
 	Hostname        string                     `json:"hostname,omitempty"`
 	MTU             int                        `json:"mtu,omitempty"`
+	// RecordPath schreibt jeden Austausch als JSONL dorthin — Header und Body
+	// inklusive, aber mit Platzhaltern statt Credentials.
+	RecordPath string `json:"record_path,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/audit"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 )
 
@@ -19,6 +20,17 @@ type HTTPInterceptor struct {
 	events   chan api.Event
 	caPool   *CAPool
 	connPool *upstreamConnPool
+	recorder *audit.Recorder
+}
+
+// SetRecorder schaltet den vollständigen Mitschnitt ein. Aufzeichnet wird der
+// Request, wie der Gast ihn gesendet hat — also mit Platzhaltern statt echter
+// Credentials, weil die Substitution erst danach greift.
+func (i *HTTPInterceptor) SetRecorder(r *audit.Recorder) {
+	i.recorder = r
+	if r != nil && i.policy != nil {
+		r.SetRedactor(i.policy.Redact)
+	}
 }
 
 func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool) *HTTPInterceptor {
@@ -50,13 +62,17 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 
 		if !i.policy.IsHostAllowed(host) {
 			i.emitBlockedEvent(req, host, "host not in allowlist")
+			i.writeRecord(audit.Blocked(i.record(req, host), "host not in allowlist"))
 			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
 
+		exchange := i.record(req, host)
+
 		modifiedReq, err := i.policy.OnRequest(req, host)
 		if err != nil {
 			i.emitBlockedEvent(req, host, err.Error())
+			i.writeRecord(audit.Blocked(exchange, err.Error()))
 			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
@@ -99,6 +115,8 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		}
 
 		if isStreamingResponse(modifiedResp) {
+			audit.CaptureResponse(exchange, modifiedResp, true, time.Since(start))
+			i.writeRecord(exchange)
 			i.emitEvent(modifiedReq, modifiedResp, host, time.Since(start))
 			err := writeResponseHeadersAndStreamBody(guestConn, modifiedResp)
 			resp.Body.Close()
@@ -110,6 +128,8 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		}
 
 		duration := time.Since(start)
+		audit.CaptureResponse(exchange, modifiedResp, false, duration)
+		i.writeRecord(exchange)
 		i.emitEvent(modifiedReq, modifiedResp, host, duration)
 
 		if err := writeResponse(guestConn, modifiedResp); err != nil {
@@ -155,6 +175,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 	if !i.policy.IsHostAllowed(serverName) {
 		i.emitBlockedEvent(nil, serverName, "host not in allowlist")
+		i.writeRecord(audit.Blocked(&audit.Exchange{Host: serverName}, "host not in allowlist"))
 		return
 	}
 
@@ -177,9 +198,13 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 		start := time.Now()
 
+		// Vor der Substitution mitschneiden: im Log stehen dann Platzhalter.
+		exchange := i.record(req, serverName)
+
 		modifiedReq, err := i.policy.OnRequest(req, serverName)
 		if err != nil {
 			i.emitBlockedEvent(req, serverName, err.Error())
+			i.writeRecord(audit.Blocked(exchange, err.Error()))
 			writeHTTPError(tlsConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
@@ -202,6 +227,8 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		}
 
 		if isStreamingResponse(modifiedResp) {
+			audit.CaptureResponse(exchange, modifiedResp, true, time.Since(start))
+			i.writeRecord(exchange)
 			i.emitEvent(modifiedReq, modifiedResp, serverName, time.Since(start))
 			if err := writeResponseHeadersAndStreamBody(tlsConn, modifiedResp); err != nil {
 				resp.Body.Close()
@@ -212,6 +239,8 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		}
 
 		duration := time.Since(start)
+		audit.CaptureResponse(exchange, modifiedResp, false, duration)
+		i.writeRecord(exchange)
 		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
 
 		if err := writeResponse(tlsConn, modifiedResp); err != nil {
@@ -288,6 +317,20 @@ func (i *HTTPInterceptor) emitBlockedEvent(req *http.Request, host, reason strin
 	case i.events <- event:
 	default:
 	}
+}
+
+func (i *HTTPInterceptor) record(req *http.Request, host string) *audit.Exchange {
+	if i.recorder == nil {
+		return nil
+	}
+	return audit.CaptureRequest(req, host)
+}
+
+func (i *HTTPInterceptor) writeRecord(ex *audit.Exchange) {
+	if i.recorder == nil || ex == nil {
+		return
+	}
+	i.recorder.Write(ex)
 }
 
 func writeHTTPError(conn net.Conn, status int, message string) {
