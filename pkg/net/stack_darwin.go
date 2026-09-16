@@ -369,13 +369,16 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
 	defer guestConn.Close()
 
+	host := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
 	if !ns.policy.IsHostAllowed(dstIP) {
-		ns.emitBlockedEvent(net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)), "host not in allowlist")
+		ns.emitBlockedEvent(host, "host not in allowlist")
 		return
 	}
 
-	realConn, err := net.Dial("tcp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
+	started := time.Now()
+	realConn, err := net.Dial("tcp", host)
 	if err != nil {
+		ns.emitPassthroughEvent(host, 0, 0, started, "dial failed: "+err.Error())
 		return
 	}
 	defer realConn.Close()
@@ -383,33 +386,78 @@ func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstP
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var sent, received atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		copyWithCancel(ctx, realConn, guestConn)
+		defer wg.Done()
+		sent.Add(copyWithCancel(ctx, realConn, guestConn))
 		cancel()
 	}()
 	go func() {
-		copyWithCancel(ctx, guestConn, realConn)
+		defer wg.Done()
+		received.Add(copyWithCancel(ctx, guestConn, realConn))
 		cancel()
 	}()
 
 	<-ctx.Done()
+	// One direction has ended; the other is still sitting in Read. The deadline
+	// wakes it so its byte count is complete before the event goes out -- without
+	// it the tally would regularly be short by the last block.
+	guestConn.SetDeadline(time.Now())
+	realConn.SetDeadline(time.Now())
+	wg.Wait()
+	ns.emitPassthroughEvent(host, sent.Load(), received.Load(), started, "")
 }
 
-func copyWithCancel(ctx context.Context, dst, src net.Conn) {
+// emitPassthroughEvent records a raw TCP connection -- everything that leaves
+// the sandbox outside HTTP and thus never reaches the MITM.
+//
+// No content: this path does not terminate the protocol, and it should not.
+// What can be known is who, when, how long and how much -- which is exactly the
+// scope of the allowlist decision taken just above. Without this line an
+// allowed connection is invisible afterwards, and only the refusals show up in
+// the audit -- a picture that looks quiet precisely when it should not.
+func (ns *NetworkStack) emitPassthroughEvent(host string, sent, received int64, started time.Time, note string) {
+	if ns.events == nil {
+		return
+	}
+	select {
+	case ns.events <- api.Event{
+		Type: "network",
+		Network: &api.NetworkEvent{
+			Method:        "TCP",
+			Host:          host,
+			URL:           "tcp://" + host,
+			RequestBytes:  sent,
+			ResponseBytes: received,
+			DurationMS:    time.Since(started).Milliseconds(),
+			BlockReason:   note,
+		},
+	}:
+	default:
+	}
+}
+
+// copyWithCancel returns how many bytes it moved, so the caller can record the
+// volume of a connection whose content it deliberately never looks at.
+func copyWithCancel(ctx context.Context, dst, src net.Conn) int64 {
 	buf := make([]byte, 32*1024)
+	var total int64
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return total
 		default:
 		}
 
 		n, err := src.Read(buf)
 		if n > 0 {
-			dst.Write(buf[:n])
+			written, _ := dst.Write(buf[:n])
+			total += int64(written)
 		}
 		if err != nil {
-			return
+			return total
 		}
 	}
 }

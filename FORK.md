@@ -89,6 +89,54 @@ Verhalten in den Randfällen, bewusst so gewählt:
 
 ---
 
+## Patch 3: `--audit-db` und `--record`
+
+Ohne Mitschrift ist nach dem Ende einer VM nicht mehr nachvollziehbar, wohin der Agent
+gesprochen hat und was abgewiesen wurde.
+
+- `--audit-db <datei>` schreibt jeden ausgehenden Request nach SQLite: `runs` (ein Lauf)
+  und `requests` (Zeitpunkt, Methode, Host, URL, Status, Bytes, Dauer, blockiert samt
+  Grund).
+- `--record <datei.jsonl>` legt den vollständigen Austausch daneben, mit redigierten
+  Secrets — zum Filtern, Auswerten und Wiederholen.
+
+| Datei | Änderung |
+|---|---|
+| `pkg/audit/audit.go` | `Logger`, Schema, `Consume()` über den Ereignisstrom |
+| `pkg/audit/record.go` | JSONL-Mitschnitt mit Redaktion |
+| `cmd/matchlock/cmd_run.go` | Flags und Verdrahtung |
+
+Ein Schreibfehler stört den Lauf nicht: das Audit ist Beobachtung, nicht Bedingung.
+
+## Patch 4: Roh-TCP-Verbindungen im Audit
+
+Patch 3 erfasst, was durch den MITM geht — also HTTP und HTTPS. Alles andere läuft über
+den **Passthrough**: SSH, Datenbankports, was auch immer auf einem erlaubten Host lauscht.
+Davon stand bisher nur im Protokoll, was die Allowlist *abgelehnt* hat. Eine erlaubte
+Verbindung war hinterher unsichtbar — ein Bild, das ausgerechnet dann ruhig aussieht, wenn
+es das nicht sein sollte.
+
+Jetzt meldet der Passthrough jede Verbindung als `method = 'TCP'`:
+
+```sql
+select ts, host, request_bytes, response_bytes, duration_ms
+  from requests where method = 'TCP' order by id desc;
+-- 2026-09-16T11:27:40Z|192.0.0.2:2201|2427|3305|481
+```
+
+**Kein Inhalt.** Dieser Weg terminiert das Protokoll nicht und soll es auch nicht. Wissen
+lässt sich, wer, wann, wie lange und wie viel — genau der Umfang der Allowlist-Entscheidung,
+die eine Zeile darüber fällt. Scheitert der Verbindungsaufbau, steht der Grund in
+`block_reason`, während `blocked` auf 0 bleibt: ein Netzfehler ist keine Ablehnung.
+
+| Datei | Änderung |
+|---|---|
+| `pkg/net/stack_darwin.go` | `handlePassthrough` misst Zeit und Bytes, `emitPassthroughEvent`, `copyWithCancel` liefert die Menge zurück |
+| `pkg/net/proxy.go` | dasselbe für den Linux-Pfad |
+
+Eine Feinheit: nach dem Ende der einen Richtung sitzt die andere noch im `Read`. Ohne ein
+gesetztes Deadline wäre die Byte-Zählung regelmäßig um den letzten Block zu kurz.
+
 ## Installation
 
 ```bash

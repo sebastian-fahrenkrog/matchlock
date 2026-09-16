@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -161,19 +162,24 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 		return
 	}
 
+	started := time.Now()
 	realConn, err := net.DialTimeout("tcp", host, 30*time.Second)
 	if err != nil {
+		tp.emitPassthroughEvent(host, 0, 0, started, "dial failed: "+err.Error())
 		return
 	}
 	defer realConn.Close()
 
+	var sent, received atomic.Int64
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(realConn, conn)
+		n, _ := io.Copy(realConn, conn)
+		sent.Add(n)
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(conn, realConn)
+		n, _ := io.Copy(conn, realConn)
+		received.Add(n)
 		done <- struct{}{}
 	}()
 
@@ -181,6 +187,36 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 	conn.SetDeadline(time.Now())
 	realConn.SetDeadline(time.Now())
 	<-done
+	tp.emitPassthroughEvent(host, sent.Load(), received.Load(), started, "")
+}
+
+// emitPassthroughEvent records a raw TCP connection -- everything that leaves
+// the sandbox outside HTTP and thus never reaches the MITM.
+//
+// No content: this path does not terminate the protocol, and it should not.
+// What can be known is who, when, how long and how much -- exactly the scope of
+// the allowlist decision taken just above. Without this line an allowed
+// connection is invisible afterwards, and only the refusals show up in the
+// audit -- a picture that looks quiet precisely when it should not.
+func (tp *TransparentProxy) emitPassthroughEvent(host string, sent, received int64, started time.Time, note string) {
+	if tp.events == nil {
+		return
+	}
+	select {
+	case tp.events <- api.Event{
+		Type: "network",
+		Network: &api.NetworkEvent{
+			Method:        "TCP",
+			Host:          host,
+			URL:           "tcp://" + host,
+			RequestBytes:  sent,
+			ResponseBytes: received,
+			DurationMS:    time.Since(started).Milliseconds(),
+			BlockReason:   note,
+		},
+	}:
+	default:
+	}
 }
 
 func (tp *TransparentProxy) emitBlockedEvent(host, reason string) {
