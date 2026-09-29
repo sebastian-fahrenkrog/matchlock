@@ -1,4 +1,4 @@
-# Fork: matchlock mit zwei Patches für Safehouse
+# Fork: matchlock mit zwei Patches für Sandburg
 
 **Branch:** `patches-v2`, aufgesetzt auf Upstream `main` (Stand 26.08.2026).
 Der frühere Branch `allow-private-ips` hing 171 Commits zurück und ist überholt.
@@ -46,7 +46,7 @@ Neuer Flag `--allow-private-ips` (Default `false`, Verhalten bleibt abwärtskomp
 
 **Weiterhin offen (nicht gefixt):** Der gVisor-Passthrough für Nicht-HTTP-Ports prüft
 `IsHostAllowed()` mit der aufgelösten IP, die Allowlist enthält aber Hostnamen. Deshalb
-müssen Hostname **und** IP angegeben werden. Safehouse löst das im Wrapper per `dig` und
+müssen Hostname **und** IP angegeben werden. Sandburg löst das im Wrapper per `dig` und
 gibt zusätzlich ein `--add-host <name>:<ip>` mit, damit der Gast den Namen auch selbst
 auflösen kann.
 
