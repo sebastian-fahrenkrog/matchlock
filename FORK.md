@@ -231,7 +231,12 @@ dieselben Wildcards wie beim HTTP-Check, Port-Suffixe werden ignoriert, IP-Liter
 nie auf einen Namen. Sonst antwortet er selbst mit `REFUSED`; eine nicht lesbare Anfrage
 ebenso, denn Bytes, die der Filter nicht versteht, darf er nicht durchlassen. Unter darwin
 landet die Ablehnung als `<name>:53` mit `dns name not in allowlist` im Audit, unter Linux
-nur im Log (der Forwarder hat keinen Ereigniskanal).
+nur im Debug-Log (der Forwarder hat keinen Ereigniskanal, und auf `Info` liefe jede
+Ablehnung durchs Terminal der Sitzung).
+
+Unter Linux nachgemessen am 29.09.2026 (Lima, Ubuntu 24.04 arm64, Firecracker): Patch 5,
+6 und 7 verhalten sich wie unter macOS — Port-Bindung, Loopback-Name, Sperrgrund bei HTTP
+und SNI, DNS-Allowlist.
 
 Nachgemessen: `example.com` und `api.github.com` lösen auf, `wikipedia.org` und
 `secret123.attacker.example` nicht, HTTPS auf `example.com` bleibt `200`.

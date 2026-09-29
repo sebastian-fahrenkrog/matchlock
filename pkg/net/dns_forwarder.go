@@ -128,7 +128,9 @@ func (d *DNSForwarder) worker() {
 
 func (d *DNSForwarder) forward(query []byte, clientAddr *net.UDPAddr) {
 	if refused, name := gateDNSQuery(query, d.allowName); refused != nil || name != "" {
-		slog.Info("dns query refused", "name", name, "reason", "dns name not in allowlist")
+		// Debug, not Info: matchlock's log shares the terminal with the guest,
+		// and a refused lookup per retry would run through an interactive session.
+		slog.Debug("dns query refused", "name", name, "reason", "dns name not in allowlist")
 		if refused != nil {
 			_, _ = d.conn.WriteToUDP(refused, clientAddr)
 		}
