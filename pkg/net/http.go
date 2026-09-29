@@ -63,7 +63,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		if !i.policy.IsHostAllowed(host) {
 			i.emitBlockedEvent(req, host, "host not in allowlist")
 			i.writeRecord(audit.Blocked(i.record(req, host), "host not in allowlist"))
-			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
+			writeBlocked(guestConn, host, "host not in allowlist")
 			return
 		}
 
@@ -73,7 +73,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		if err != nil {
 			i.emitBlockedEvent(req, host, err.Error())
 			i.writeRecord(audit.Blocked(exchange, err.Error()))
-			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
+			writeBlocked(guestConn, host, err.Error())
 			return
 		}
 
@@ -108,7 +108,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
 		if err != nil {
 			i.emitBlockedEvent(modifiedReq, host, err.Error())
-			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
+			writeBlocked(guestConn, host, err.Error())
 			resp.Body.Close()
 			pc.conn.Close()
 			return
@@ -176,6 +176,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 	if !i.policy.IsHostAllowed(serverName) {
 		i.emitBlockedEvent(nil, serverName, "host not in allowlist")
 		i.writeRecord(audit.Blocked(&audit.Exchange{Host: serverName}, "host not in allowlist"))
+		answerBlockedTLS(tlsConn, serverName, "host not in allowlist")
 		return
 	}
 
@@ -205,7 +206,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		if err != nil {
 			i.emitBlockedEvent(req, serverName, err.Error())
 			i.writeRecord(audit.Blocked(exchange, err.Error()))
-			writeHTTPError(tlsConn, http.StatusForbidden, "Blocked by policy")
+			writeBlocked(tlsConn, serverName, err.Error())
 			return
 		}
 
@@ -221,7 +222,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, serverName)
 		if err != nil {
 			i.emitBlockedEvent(modifiedReq, serverName, err.Error())
-			writeHTTPError(tlsConn, http.StatusForbidden, "Blocked by policy")
+			writeBlocked(tlsConn, serverName, err.Error())
 			resp.Body.Close()
 			return
 		}
@@ -331,6 +332,39 @@ func (i *HTTPInterceptor) writeRecord(ex *audit.Exchange) {
 		return
 	}
 	i.recorder.Write(ex)
+}
+
+// blockedHeader carries the reason for a policy refusal in machine-readable form.
+const blockedHeader = "X-Matchlock-Blocked"
+
+// writeBlocked answers a refused request with 403 and says why.
+//
+// A bare "Blocked by policy" leaves an agent inside the sandbox guessing: it
+// cannot tell a missing allowlist entry from a secret sent to the wrong host
+// or a server-side error, and tends to retry or to probe other routes. The
+// reason in the body and in a header lets it stop and ask for the right change
+// instead.
+func writeBlocked(conn net.Conn, host, reason string) {
+	body := fmt.Sprintf("matchlock: request to %q blocked by sandbox policy: %s\n", host, reason)
+	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\n%s: %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		http.StatusForbidden, http.StatusText(http.StatusForbidden), blockedHeader, reason, len(body), body)
+	io.WriteString(conn, resp)
+}
+
+// answerBlockedTLS turns a refusal after the TLS handshake into a readable 403.
+//
+// The SNI check runs once the handshake with the guest has completed, so the
+// channel is already decrypted. Closing it silently shows up inside the VM as
+// "connection reset" or "empty reply", indistinguishable from a network fault.
+// Reading the first request and answering it costs one round trip and tells
+// the client what happened. A client that sends nothing within the deadline
+// gets the plain close as before.
+func answerBlockedTLS(tlsConn *tls.Conn, host, reason string) {
+	tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := http.ReadRequest(bufio.NewReader(tlsConn)); err != nil {
+		return
+	}
+	writeBlocked(tlsConn, host, reason)
 }
 
 func writeHTTPError(conn net.Conn, status int, message string) {

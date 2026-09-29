@@ -137,6 +137,39 @@ die eine Zeile darüber fällt. Scheitert der Verbindungsaufbau, steht der Grund
 Eine Feinheit: nach dem Ende der einen Richtung sitzt die andere noch im `Read`. Ohne ein
 gesetztes Deadline wäre die Byte-Zählung regelmäßig um den letzten Block zu kurz.
 
+## Patch 5: Sperrgrund statt „Blocked by policy"
+
+Eine Ablehnung im MITM hieß bisher immer `403` mit dem Text `Blocked by policy` — ob der
+Host fehlte, ein Platzhalter an den falschen Host ging oder eine Regel griff, war von
+innen nicht zu unterscheiden. Bei HTTPS mit nicht erlaubtem SNI kam nicht einmal das:
+die Verbindung wurde nach dem Handshake wortlos geschlossen, im Gast ein
+`connection reset`, nicht zu unterscheiden von einem Netzfehler. Ein Agent probiert dann
+weiter, statt nach der richtigen Freigabe zu fragen.
+
+Jetzt trägt jede Ablehnung ihren Grund, im Body und maschinenlesbar im Header:
+
+```
+HTTP/1.1 403 Forbidden
+X-Matchlock-Blocked: host not in allowlist
+
+matchlock: request to "evil.example" blocked by sandbox policy: host not in allowlist
+```
+
+Beim abgelehnten SNI liest der Proxy den ersten Request auf dem ohnehin schon
+entschlüsselten Kanal (Deadline 5 s) und beantwortet ihn so. Sendet der Client nichts,
+bleibt es beim Schließen.
+
+Nicht erfasst: der Passthrough. Roh-TCP hat kein Protokoll, in das sich ein Grund
+schreiben ließe; die Verbindung wird weiterhin geschlossen, der Grund steht im Audit.
+
+Vorbild: `deniedDomainReasons` in Anthropics
+[sandbox-runtime](https://github.com/anthropics/sandbox-runtime).
+
+| Datei | Änderung |
+|---|---|
+| `pkg/net/http.go` | `writeBlocked`, `answerBlockedTLS`; alle `403`-Stellen nutzen sie |
+| `pkg/net/http_blocked_test.go` | HTTP- und SNI-Fall |
+
 ## Installation
 
 ```bash
