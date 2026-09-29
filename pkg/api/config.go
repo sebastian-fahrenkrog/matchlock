@@ -99,6 +99,10 @@ type NetworkConfig struct {
 	// RecordPath schreibt jeden Austausch als JSONL dorthin — Header und Body
 	// inklusive, aber mit Platzhaltern statt Credentials.
 	RecordPath string `json:"record_path,omitempty"`
+	// GuardResolvedIPs makes the proxy resolve allowed hostnames itself and
+	// refuse loopback, link-local, metadata and this host's own addresses
+	// unless that address is allowed as a literal.
+	GuardResolvedIPs bool `json:"guard_resolved_ips,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.

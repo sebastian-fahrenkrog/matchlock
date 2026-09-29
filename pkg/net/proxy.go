@@ -157,7 +157,7 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 	defer conn.Close()
 
 	host := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
-	if !tp.policy.IsHostAllowed(dstIP) {
+	if !tp.policy.IsEndpointAllowed(dstIP, dstPort) {
 		tp.emitBlockedEvent(host, "host not in allowlist")
 		return
 	}

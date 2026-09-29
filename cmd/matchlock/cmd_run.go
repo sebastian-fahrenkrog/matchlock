@@ -130,6 +130,7 @@ func init() {
 	runCmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
 	runCmd.Flags().Bool("network-intercept", false, "Force network interception proxy/stack even when allow-list and secrets are empty")
 	runCmd.Flags().Bool("allow-private-ips", false, "Allow connections to private IP ranges (10/8, 172.16/12, 192.168/16)")
+	runCmd.Flags().Bool("guard-resolved-ips", false, "Resolve allowed hostnames in the proxy and refuse loopback, link-local, metadata and this host's own addresses unless allowed as a literal")
 	runCmd.Flags().StringSlice("secret-from-file", nil, "Secret whose value is read from a file at request time (NAME=/path/to/file@host1,host2)")
 	runCmd.Flags().String("audit-db", "", "Record every outbound request into this SQLite file (method, host, url, status, bytes, duration, blocked)")
 	runCmd.Flags().String("record", "", "Record full request/response exchanges as JSONL (headers and bodies, credentials stay placeholders)")
@@ -230,6 +231,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	noNetwork, _ := cmd.Flags().GetBool("no-network")
 	networkIntercept, _ := cmd.Flags().GetBool("network-intercept")
 	allowPrivateIPs, _ := cmd.Flags().GetBool("allow-private-ips")
+	guardResolvedIPs, _ := cmd.Flags().GetBool("guard-resolved-ips")
 	secretFromFiles, _ := cmd.Flags().GetStringSlice("secret-from-file")
 	auditDB, _ := cmd.Flags().GetString("audit-db")
 	recordPath, _ := cmd.Flags().GetString("record")
@@ -419,16 +421,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 			TimeoutSeconds: timeout,
 		},
 		Network: &api.NetworkConfig{
-			AllowedHosts:    allowHosts,
-			AddHosts:        addHosts,
-			BlockPrivateIPs: !allowPrivateIPs,
-			RecordPath:      recordPath,
-			NoNetwork:       noNetwork,
-			Intercept:       networkIntercept,
-			Secrets:         parsedSecrets,
-			DNSServers:      dnsServers,
-			Hostname:        hostname,
-			MTU:             networkMTU,
+			AllowedHosts:     allowHosts,
+			AddHosts:         addHosts,
+			BlockPrivateIPs:  !allowPrivateIPs,
+			GuardResolvedIPs: guardResolvedIPs,
+			RecordPath:       recordPath,
+			NoNetwork:        noNetwork,
+			Intercept:        networkIntercept,
+			Secrets:          parsedSecrets,
+			DNSServers:       dnsServers,
+			Hostname:         hostname,
+			MTU:              networkMTU,
 		},
 		VFS:        vfsConfig,
 		Env:        parsedEnv,

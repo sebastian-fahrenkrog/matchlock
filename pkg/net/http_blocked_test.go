@@ -65,3 +65,26 @@ func TestHandleHTTPS_BlockedSNIAnswersInsteadOfClosing(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Equal(t, "host not in allowlist", resp.Header.Get(blockedHeader))
 }
+
+func TestHandleHTTP_ResolvedLoopbackRefused(t *testing.T) {
+	engine := policy.NewEngine(&api.NetworkConfig{
+		AllowedHosts:     []string{"localhost"},
+		GuardResolvedIPs: true,
+	})
+	interceptor := NewHTTPInterceptor(engine, nil, nil)
+
+	guest, proxySide := net.Pipe()
+	defer guest.Close()
+	go interceptor.HandleHTTP(proxySide, "203.0.113.7", 80)
+
+	guest.SetDeadline(time.Now().Add(5 * time.Second))
+	_, err := io.WriteString(guest, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	require.NoError(t, err)
+
+	resp, err := http.ReadResponse(bufio.NewReader(guest), nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get(blockedHeader), "loopback")
+}

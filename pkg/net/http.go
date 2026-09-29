@@ -2,7 +2,9 @@ package net
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,7 +62,8 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			host = dstIP
 		}
 
-		if !i.policy.IsHostAllowed(host) {
+		hostOnly := stripPort(host)
+		if !i.policy.IsEndpointAllowed(hostOnly, dstPort) {
 			i.emitBlockedEvent(req, host, "host not in allowlist")
 			i.writeRecord(audit.Blocked(i.record(req, host), "host not in allowlist"))
 			writeBlocked(guestConn, host, "host not in allowlist")
@@ -82,7 +85,12 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		// Try to reuse an existing upstream connection from the pool.
 		pc := i.connPool.get(targetHost)
 		if pc == nil {
-			realConn, err := net.DialTimeout("tcp", targetHost, 30*time.Second)
+			dialAddr, err := i.policy.DialAddress(context.Background(), hostOnly, dstPort)
+			if err != nil {
+				i.refuseResolved(guestConn, exchange, modifiedReq, host, err)
+				return
+			}
+			realConn, err := net.DialTimeout("tcp", dialAddr, 30*time.Second)
 			if err != nil {
 				writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
 				return
@@ -173,14 +181,26 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		serverName = dstIP
 	}
 
-	if !i.policy.IsHostAllowed(serverName) {
+	if !i.policy.IsEndpointAllowed(serverName, dstPort) {
 		i.emitBlockedEvent(nil, serverName, "host not in allowlist")
 		i.writeRecord(audit.Blocked(&audit.Exchange{Host: serverName}, "host not in allowlist"))
 		answerBlockedTLS(tlsConn, serverName, "host not in allowlist")
 		return
 	}
 
-	realConn, err := tls.Dial("tcp", net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort)), &tls.Config{
+	dialAddr, err := i.policy.DialAddress(context.Background(), serverName, dstPort)
+	if err != nil {
+		if errors.Is(err, policy.ErrResolvedAddressDenied) {
+			i.emitBlockedEvent(nil, serverName, err.Error())
+			i.writeRecord(audit.Blocked(&audit.Exchange{Host: serverName}, err.Error()))
+			answerBlockedTLS(tlsConn, serverName, err.Error())
+		}
+		return
+	}
+
+	// Dial the checked address; the certificate is still verified against
+	// the name the guest asked for.
+	realConn, err := tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second}, "tcp", dialAddr, &tls.Config{
 		ServerName: serverName,
 	})
 	if err != nil {
@@ -332,6 +352,26 @@ func (i *HTTPInterceptor) writeRecord(ex *audit.Exchange) {
 		return
 	}
 	i.recorder.Write(ex)
+}
+
+// refuseResolved answers a failed DialAddress on the plain HTTP path: a denied
+// resolution is a policy refusal and says so, anything else is a gateway error.
+func (i *HTTPInterceptor) refuseResolved(guestConn net.Conn, exchange *audit.Exchange, req *http.Request, host string, err error) {
+	if !errors.Is(err, policy.ErrResolvedAddressDenied) {
+		writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
+		return
+	}
+	i.emitBlockedEvent(req, host, err.Error())
+	i.writeRecord(audit.Blocked(exchange, err.Error()))
+	writeBlocked(guestConn, host, err.Error())
+}
+
+// stripPort drops a ":port" suffix from a Host header value.
+func stripPort(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 // blockedHeader carries the reason for a policy refusal in machine-readable form.

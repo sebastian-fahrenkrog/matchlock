@@ -170,6 +170,53 @@ Vorbild: `deniedDomainReasons` in Anthropics
 | `pkg/net/http.go` | `writeBlocked`, `answerBlockedTLS`; alle `403`-Stellen nutzen sie |
 | `pkg/net/http_blocked_test.go` | HTTP- und SNI-Fall |
 
+## Patch 6: Ports in der Allowlist, `--guard-resolved-ips`
+
+Zwei Löcher, beide gemessen am 29.09.2026 aus der VM heraus:
+
+**Die Allowlist kannte keine Ports.** `IsHostAllowed` schnitt alles ab dem ersten `:` ab.
+Sandburg muss die LAN-IP des Hosts freigeben, damit Bastion und Bridges erreichbar sind —
+und damit war *jeder* Dienst auf dieser IP offen. Ein beliebiger `http.server` auf
+`0.0.0.0:18999` antwortete aus der VM mit `200`.
+
+Jetzt darf ein Eintrag einen Port tragen: `--allow-host 192.168.2.102:2201` öffnet genau
+diesen Port. Einträge ohne Port gelten wie bisher für jeden Port; IPv6 in eckigen Klammern
+(`[2001:db8::1]:443`). Geprüft wird an allen vier Stellen — HTTP, HTTPS und beide
+Passthrough-Pfade — über `IsEndpointAllowed(host, port)`.
+
+**Ein erlaubter Name durfte überallhin zeigen.** Der MITM prüfte den Namen und wählte dann
+den Namen; wohin er auflöste, entschied das DNS. Mit `--allow-private-ips` (Patch 1, für
+Sandburg nötig) fiel auch der Rest-Schutz. Ein Gast konnte mit
+`curl --resolve name:80:<beliebige IP> http://name/` jeden erlaubten Namen ansteuern, der
+auf `127.0.0.1` zeigt, und landete auf dem Loopback des Hosts.
+
+Mit `--guard-resolved-ips` löst der Proxy selbst auf, einmal, und verwirft Adressen der
+Klassen Loopback, unspecified, Link-Local (inkl. `169.254.169.254`), Multicast, Broadcast,
+weitere Cloud-Metadaten-Endpunkte und **die eigenen Interface-Adressen des Hosts**. Gewählt
+wird genau die geprüfte Adresse, es gibt keinen zweiten Lookup; das TLS-Zertifikat wird
+weiter gegen den Namen geprüft. Private Netze (10/8, 192.168/16, …) bleiben erlaubt: ein
+Intranet-Name ist eine legitime Freigabe. Ausnahme: steht die Adresse selbst als Literal in
+der Allowlist (mit passendem Port), ist sie erlaubt — über den Namen gewinnt man dann nichts,
+was das Literal nicht schon gibt.
+
+```
+HTTP/1.1 403 Forbidden
+X-Matchlock-Blocked: resolved address denied: localtest.me resolved to a loopback address
+```
+
+Default aus, das CLI-Verhalten bleibt abwärtskompatibel; Sandburg setzt den Flag immer.
+
+Vorbild: der „Resolved-address check" in Anthropics
+[sandbox-runtime](https://github.com/anthropics/sandbox-runtime).
+
+| Datei | Änderung |
+|---|---|
+| `pkg/policy/endpoint.go` | `splitPatternPort`, `IsEndpointAllowed`-Helfer, `DialAddress`, Adressklassen |
+| `pkg/policy/engine.go` | `IsHostAllowed` versteht `host:port`, `IsEndpointAllowed` |
+| `pkg/net/http.go` | Port-Prüfung, Wählen der geprüften Adresse, 403 bei verworfener Auflösung |
+| `pkg/net/proxy.go`, `pkg/net/stack_darwin.go` | Port-Prüfung im Passthrough |
+| `pkg/api/config.go`, `cmd/matchlock/cmd_run.go` | `GuardResolvedIPs`, `--guard-resolved-ips` |
+
 ## Installation
 
 ```bash

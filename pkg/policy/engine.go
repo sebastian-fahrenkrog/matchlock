@@ -187,11 +187,24 @@ func (e *Engine) AllowedHosts() []string {
 	return hosts
 }
 
-func (e *Engine) IsHostAllowed(host string) bool {
+// IsHostAllowed checks a "host" or "host:port" string against the allowlist.
+// Without a port only entries without a port can match; see IsEndpointAllowed.
+func (e *Engine) IsHostAllowed(hostport string) bool {
+	host, port := splitHostPort(hostport)
+	return e.IsEndpointAllowed(host, port)
+}
+
+// IsEndpointAllowed checks host and destination port against the allowlist.
+//
+// An entry without a port ("api.example.com", "10.0.0.5") matches any port, as
+// it always did. An entry with one ("10.0.0.5:2201") matches that port only,
+// so a single service on an address can be opened without the rest of it.
+// port 0 means "unknown" and matches port-less entries only.
+func (e *Engine) IsEndpointAllowed(host string, port int) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	host = strings.Split(host, ":")[0]
+	host = strings.Trim(host, "[]")
 
 	if e.config.BlockPrivateIPs {
 		if isPrivateIP(host) {
@@ -203,7 +216,11 @@ func (e *Engine) IsHostAllowed(host string) bool {
 		return true
 	}
 
-	for _, pattern := range e.config.AllowedHosts {
+	for _, entry := range e.config.AllowedHosts {
+		pattern, entryPort := splitPatternPort(entry)
+		if entryPort != 0 && entryPort != port {
+			continue
+		}
 		if matchGlob(pattern, host) {
 			return true
 		}
