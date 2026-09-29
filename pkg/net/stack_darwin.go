@@ -490,6 +490,18 @@ func (ns *NetworkStack) handleDNS(r *udp.ForwarderRequest) {
 		return
 	}
 
+	var allowName nameFilter
+	if ns.policy != nil {
+		allowName = ns.policy.IsNameResolvable
+	}
+	if refused, name := gateDNSQuery(buf[:n], allowName); refused != nil || name != "" {
+		ns.emitBlockedEvent(name+":53", "dns name not in allowlist")
+		if refused != nil {
+			guestConn.Write(refused)
+		}
+		return
+	}
+
 	if len(ns.dnsServers) == 0 {
 		slog.Debug("dropping DNS query; no upstream servers configured")
 		return

@@ -103,6 +103,9 @@ type NetworkConfig struct {
 	// refuse loopback, link-local, metadata and this host's own addresses
 	// unless that address is allowed as a literal.
 	GuardResolvedIPs bool `json:"guard_resolved_ips,omitempty"`
+	// DNSAllowlist answers guest DNS queries only for names that match the
+	// allowlist and refuses the rest.
+	DNSAllowlist bool `json:"dns_allowlist,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.

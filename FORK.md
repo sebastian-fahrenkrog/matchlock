@@ -1,4 +1,4 @@
-# Fork: matchlock mit zwei Patches für Sandburg
+# Fork: matchlock mit Patches für Sandburg
 
 **Branch:** `patches-v2`, aufgesetzt auf Upstream `main` (Stand 26.08.2026).
 Der frühere Branch `allow-private-ips` hing 171 Commits zurück und ist überholt.
@@ -216,6 +216,35 @@ Vorbild: der „Resolved-address check" in Anthropics
 | `pkg/net/http.go` | Port-Prüfung, Wählen der geprüften Adresse, 403 bei verworfener Auflösung |
 | `pkg/net/proxy.go`, `pkg/net/stack_darwin.go` | Port-Prüfung im Passthrough |
 | `pkg/api/config.go`, `cmd/matchlock/cmd_run.go` | `GuardResolvedIPs`, `--guard-resolved-ips` |
+
+## Patch 7: `--dns-allowlist`
+
+Gemessen am 29.09.2026: In der VM ließ sich jeder Name auflösen, auch `wikipedia.org`
+bei einer Allowlist mit nur `example.com`. Beide DNS-Pfade (`handleDNS` im darwin-Stack,
+`DNSForwarder` unter Linux) reichten jede Anfrage ungeprüft an die Upstream-Server weiter.
+Eine Anfrage ist aber schon Datenabfluss: `<geheimnis>.angreifer.example` landet beim
+autoritativen Nameserver des Angreifers, egal was die HTTP-Allowlist sagt.
+
+Mit `--dns-allowlist` parst der Forwarder jede Anfrage (`golang.org/x/net/dns/dnsmessage`)
+und leitet sie nur weiter, wenn **jeder** gefragte Name zu einem Allowlist-Eintrag passt —
+dieselben Wildcards wie beim HTTP-Check, Port-Suffixe werden ignoriert, IP-Literale passen
+nie auf einen Namen. Sonst antwortet er selbst mit `REFUSED`; eine nicht lesbare Anfrage
+ebenso, denn Bytes, die der Filter nicht versteht, darf er nicht durchlassen. Unter darwin
+landet die Ablehnung als `<name>:53` mit `dns name not in allowlist` im Audit, unter Linux
+nur im Log (der Forwarder hat keinen Ereigniskanal).
+
+Nachgemessen: `example.com` und `api.github.com` lösen auf, `wikipedia.org` und
+`secret123.attacker.example` nicht, HTTPS auf `example.com` bleibt `200`.
+
+Default aus; Sandburg setzt den Flag immer.
+
+| Datei | Änderung |
+|---|---|
+| `pkg/net/dns_gate.go` | `gateDNSQuery`, `REFUSED`-Antwort |
+| `pkg/net/stack_darwin.go`, `pkg/net/dns_forwarder.go` | Gate vor dem Weiterleiten |
+| `pkg/policy/endpoint.go` | `IsNameResolvable` |
+| `pkg/sandbox/sandbox_linux.go` | Filter am Forwarder setzen |
+| `pkg/api/config.go`, `cmd/matchlock/cmd_run.go` | `DNSAllowlist`, `--dns-allowlist` |
 
 ## Installation
 

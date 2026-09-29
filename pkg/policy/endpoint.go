@@ -178,3 +178,35 @@ func (e *Engine) DialAddress(ctx context.Context, host string, port int) (string
 	}
 	return "", fmt.Errorf("%w: %s resolved to a %s address", ErrResolvedAddressDenied, host, lastClass)
 }
+
+func (e *Engine) dnsAllowlistEnabled() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.config.DNSAllowlist
+}
+
+// IsNameResolvable reports whether the guest may resolve name through DNS.
+//
+// Without the DNS allowlist every name is forwarded, as before. With it, only
+// names matching an allowlist entry are: a query is data leaving the sandbox,
+// and "<secret>.attacker.example" reaches the attacker's name server no matter
+// what the HTTP allowlist says. IP-literal entries never match a name.
+func (e *Engine) IsNameResolvable(name string) bool {
+	if !e.dnsAllowlistEnabled() {
+		return true
+	}
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.config.AllowedHosts) == 0 {
+		return true
+	}
+	for _, entry := range e.config.AllowedHosts {
+		pattern, _ := splitPatternPort(entry)
+		if matchGlob(strings.ToLower(pattern), name) {
+			return true
+		}
+	}
+	return false
+}

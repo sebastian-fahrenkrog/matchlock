@@ -349,6 +349,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateProxy, err)
 		}
+		dnsForwarder.SetNameFilter(policyEngine.IsNameResolvable)
 
 		nfRules := sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), config.Network.GetDNSServers())
 		nfRules.SetDNSForwarderPort(dnsForwarder.Port())

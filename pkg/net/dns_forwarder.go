@@ -4,6 +4,7 @@ package net
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -23,6 +24,13 @@ type DNSForwarder struct {
 
 	upstreamMu sync.Mutex
 	upstreams  map[net.Conn]struct{}
+	allowName  nameFilter
+}
+
+// SetNameFilter makes the forwarder refuse queries for names allow rejects.
+// Call before the guest starts sending queries.
+func (d *DNSForwarder) SetNameFilter(allow func(name string) bool) {
+	d.allowName = allow
 }
 
 type dnsRequest struct {
@@ -119,6 +127,13 @@ func (d *DNSForwarder) worker() {
 }
 
 func (d *DNSForwarder) forward(query []byte, clientAddr *net.UDPAddr) {
+	if refused, name := gateDNSQuery(query, d.allowName); refused != nil || name != "" {
+		slog.Info("dns query refused", "name", name, "reason", "dns name not in allowlist")
+		if refused != nil {
+			_, _ = d.conn.WriteToUDP(refused, clientAddr)
+		}
+		return
+	}
 	for _, server := range d.dnsServers {
 		if d.isStopping() {
 			return
