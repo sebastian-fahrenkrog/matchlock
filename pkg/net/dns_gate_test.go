@@ -10,7 +10,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-func buildQuery(t *testing.T, id uint16, name string) []byte {
+func buildGateQuery(t *testing.T, id uint16, name string) []byte {
 	t.Helper()
 	msg := dnsmessage.Message{
 		Header: dnsmessage.Header{ID: id, RecursionDesired: true},
@@ -32,12 +32,12 @@ func TestGateDNSQuery(t *testing.T) {
 	})
 
 	for _, name := range []string{"example.com.", "api.github.com.", "EXAMPLE.com."} {
-		refused, blocked := gateDNSQuery(buildQuery(t, 7, name), engine.IsNameResolvable)
+		refused, blocked := gateDNSQuery(buildGateQuery(t, 7, name), engine.IsNameResolvable)
 		assert.Nil(t, refused, name)
 		assert.Empty(t, blocked, name)
 	}
 
-	refused, blocked := gateDNSQuery(buildQuery(t, 42, "secret.attacker.example."), engine.IsNameResolvable)
+	refused, blocked := gateDNSQuery(buildGateQuery(t, 42, "secret.attacker.example."), engine.IsNameResolvable)
 	require.NotNil(t, refused)
 	assert.Equal(t, "secret.attacker.example.", blocked)
 
@@ -57,7 +57,7 @@ func TestGateDNSQuery_Unparsable(t *testing.T) {
 
 func TestGateDNSQuery_FlagOffForwardsAll(t *testing.T) {
 	engine := policy.NewEngine(&api.NetworkConfig{AllowedHosts: []string{"example.com"}})
-	refused, blocked := gateDNSQuery(buildQuery(t, 1, "wikipedia.org."), engine.IsNameResolvable)
+	refused, blocked := gateDNSQuery(buildGateQuery(t, 1, "wikipedia.org."), engine.IsNameResolvable)
 	assert.Nil(t, refused)
 	assert.Empty(t, blocked)
 }
