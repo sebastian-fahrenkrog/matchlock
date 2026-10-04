@@ -137,6 +137,21 @@ func (e *Engine) literalAllowed(ip net.IP, port int) bool {
 	return false
 }
 
+// hostAddresses parses the configured extra host addresses; invalid entries
+// are skipped.
+func (e *Engine) hostAddresses() []net.IP {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ips := make([]net.IP, 0, len(e.config.HostAddresses))
+	for _, s := range e.config.HostAddresses {
+		if ip := net.ParseIP(strings.Trim(s, "[]")); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
 func (e *Engine) guardEnabled() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -167,7 +182,7 @@ func (e *Engine) DialAddress(ctx context.Context, host string, port int) (string
 		return "", fmt.Errorf("%w: %s resolved to no address", ErrResolvedAddressDenied, host)
 	}
 
-	local := localAddresses()
+	local := append(localAddresses(), e.hostAddresses()...)
 	lastClass := ""
 	for _, a := range addrs {
 		class := deniedClass(a.IP, local)

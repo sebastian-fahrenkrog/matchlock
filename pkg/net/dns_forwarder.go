@@ -157,7 +157,7 @@ func (d *DNSForwarder) exchange(query []byte, server string) ([]byte, error) {
 	if d.isStopping() {
 		return nil, net.ErrClosed
 	}
-	upstream, err := net.DialTimeout("udp", dnsServerAddr(server), dnsUpstreamTimeout)
+	upstream, err := dialTimeout("udp", dnsServerAddr(server), dnsUpstreamTimeout)
 	if err != nil {
 		return nil, err
 	}

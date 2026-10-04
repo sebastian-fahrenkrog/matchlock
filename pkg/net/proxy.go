@@ -15,6 +15,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/audit"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 )
 
@@ -48,6 +49,7 @@ type ProxyConfig struct {
 	Policy          *policy.Engine
 	Events          chan api.Event
 	CAPool          *CAPool
+	Recorder        *audit.Recorder // optional full exchange recording (--record)
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -83,11 +85,16 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		actualPassthroughPort = passthroughLn.Addr().(*net.TCPAddr).Port
 	}
 
+	interceptor := NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool)
+	if cfg.Recorder != nil {
+		interceptor.SetRecorder(cfg.Recorder)
+	}
+
 	tp := &TransparentProxy{
 		httpListener:        httpLn,
 		httpsListener:       httpsLn,
 		passthroughListener: passthroughLn,
-		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
+		interceptor:         interceptor,
 		policy:              cfg.Policy,
 		events:              cfg.Events,
 		httpPort:            actualHTTPPort,
@@ -163,7 +170,7 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 	}
 
 	started := time.Now()
-	realConn, err := net.DialTimeout("tcp", host, 30*time.Second)
+	realConn, err := dialTimeout("tcp", host, 30*time.Second)
 	if err != nil {
 		tp.emitPassthroughEvent(host, 0, 0, started, "dial failed: "+err.Error())
 		return

@@ -1,0 +1,16 @@
+# Network gate image for container backends (FORK.md, patch 8).
+#
+#   docker build -f Dockerfile.gate -t matchlock-gate:latest .
+#
+# ca-certificates: the MITM verifies upstream TLS against the system roots.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/matchlock ./cmd/matchlock
+
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/matchlock /usr/local/bin/matchlock
+ENTRYPOINT ["/usr/local/bin/matchlock", "gate"]

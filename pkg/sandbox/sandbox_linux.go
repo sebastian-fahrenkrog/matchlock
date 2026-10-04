@@ -13,6 +13,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/audit"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
@@ -323,6 +324,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			return nil, errx.With(ErrCreateProxy, ": missing gateway IP for proxy bind")
 		}
 
+		// Full exchange recording, as on macOS. The Linux path never wired it,
+		// so --record silently produced nothing here.
+		var recorder *audit.Recorder
+		if config.Network.RecordPath != "" {
+			recorder, err = audit.NewRecorder(config.Network.RecordPath, id)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: request recording disabled: %v\n", err)
+				recorder = nil
+			}
+		}
+
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
 			BindAddr:        gatewayIP,
 			HTTPPort:        0,
@@ -331,6 +343,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Policy:          policyEngine,
 			Events:          events,
 			CAPool:          caPool,
+			Recorder:        recorder,
 		})
 		if err != nil {
 			machine.Close(ctx)

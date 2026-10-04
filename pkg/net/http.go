@@ -90,7 +90,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 				i.refuseResolved(guestConn, exchange, modifiedReq, host, err)
 				return
 			}
-			realConn, err := net.DialTimeout("tcp", dialAddr, 30*time.Second)
+			realConn, err := dialTimeout("tcp", dialAddr, 30*time.Second)
 			if err != nil {
 				writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
 				return
@@ -200,7 +200,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 	// Dial the checked address; the certificate is still verified against
 	// the name the guest asked for.
-	realConn, err := tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second}, "tcp", dialAddr, &tls.Config{
+	realConn, err := tls.DialWithDialer(newDialer(30*time.Second), "tcp", dialAddr, &tls.Config{
 		ServerName: serverName,
 	})
 	if err != nil {

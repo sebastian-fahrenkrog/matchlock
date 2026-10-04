@@ -106,6 +106,11 @@ type NetworkConfig struct {
 	// DNSAllowlist answers guest DNS queries only for names that match the
 	// allowlist and refuses the rest.
 	DNSAllowlist bool `json:"dns_allowlist,omitempty"`
+	// HostAddresses are further addresses the resolved-IP guard treats as
+	// "this host's". The VM backends run the proxy on the host itself, where
+	// the interface list already holds them; the gate runs in a container,
+	// whose interfaces do not include the host's LAN address.
+	HostAddresses []string `json:"host_addresses,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.

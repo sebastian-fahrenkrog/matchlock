@@ -251,6 +251,59 @@ Default aus; Sandburg setzt den Flag immer.
 | `pkg/sandbox/sandbox_linux.go` | Filter am Forwarder setzen |
 | `pkg/api/config.go`, `cmd/matchlock/cmd_run.go` | `DNSAllowlist`, `--dns-allowlist` |
 
+## Patch 8: `matchlock gate` — die Netzhälfte ohne VM
+
+Sandburgs Docker-Backend (Linux ohne `/dev/kvm`) braucht dieselbe Netzgrenze wie die VM,
+nur ohne VM. `matchlock gate` startet genau die Teile, die `run` unter Linux um die VM legt:
+`policy.Engine`, `TransparentProxy` (MITM + Passthrough), `DNSForwarder` mit Namensfilter,
+Audit-DB und Mitschnitt. Das Gate läuft als root in einem eigenen Container. Der
+Agent-Container tritt dessen Netz-Namespace bei (`--network container:<gate>`), und
+nftables im Namespace leiten jedes Paket um, das nicht vom Gate selbst stammt.
+
+**Erkennung über `SO_MARK`, nicht über die UID.** Unter rootless Docker bildet nur
+Container-root auf den Operator ab. Der Agent muss also uid 0 haben, um ins Projekt
+schreiben zu können, genau wie das Gate. Unterscheidbar sind die beiden deshalb nur über
+die Marke `0x53424752`, die das Gate auf jeden eigenen Socket setzt (`SetDialMark`: alle
+Dial-Stellen in `pkg/net` und `net.DefaultResolver`). Ohne `CAP_NET_ADMIN` bzw.
+`CAP_NET_RAW` kann der Agent sie nicht setzen; Sandburg startet ihn mit `--cap-drop ALL`.
+
+Die Regeln (`GateRules`):
+- `nat OUTPUT` läuft mit Priorität dstnat−10, also vor Dockers `DOCKER_OUTPUT`.
+- Jedes unmarkierte UDP/53 geht an den Forwarder. Das schließt Dockers eingebetteten
+  Resolver auf `127.0.0.11` ein, sonst wäre die DNS-Allowlist umgangen.
+- Loopback bleibt unangetastet.
+- TCP 80/443 geht an den MITM, übriges TCP an den Passthrough.
+- `filter OUTPUT` akzeptiert Loopback und alles mit `ct status dnat` und verwirft den Rest
+  (anderes UDP, ICMP, IPv6).
+
+Gemessen am 04.10.2026: Ein Test über `oifname lo` verwarf jedes umgeleitete SYN, weil das
+Paket in diesem Hook noch das Interface der ursprünglichen Route trägt.
+
+Ausgaben nach `--ca-out`: `ca.crt` (nie der Schlüssel), `env` (CA-Variablen und
+Secret-Platzhalter, wie `prepareExecEnv` sie der VM gibt) und zuletzt `ready`.
+`--host-address` ergänzt die Adressen, die der Resolved-IP-Guard als „this host's“ zählt.
+Das Gate kennt im Container nur seine Bridge-Adresse. `--file-owner UID:GID` gibt unter
+rootful Docker die geschriebenen Dateien an den Operator zurück.
+
+Nebenbei behoben: Unter Linux hat `run --record` nie etwas geschrieben, der Recorder war
+nur im darwin-Stack verdrahtet. `ProxyConfig.Recorder` schließt die Lücke für `run` und
+`gate`.
+
+Gemessen am 04.10.2026 (Lima, Ubuntu 24.04 arm64, Docker 29.8, rootless und rootful):
+erlaubtes HTTPS 200, fremder Name `REFUSED`, Platzhalter nur zum freigegebenen Host
+ersetzt (sonst 403), UDP, IPv6 und `SO_MARK` aus dem Agent blockiert, Host-IP nur auf dem
+freigegebenen Port, `vm_id` = Run-ID im Audit, `security-test.sh` grün.
+
+| Datei | Änderung |
+|---|---|
+| `cmd/matchlock/cmd_gate.go` | Subkommando `gate` (nur Linux) |
+| `pkg/net/nftables_gate.go` | `GateRules`, `GateMark` |
+| `pkg/net/dial.go`, `pkg/net/dial_mark_linux.go` | gemeinsamer Dialer, `SetDialMark` |
+| `pkg/net/proxy.go`, `http.go`, `dns_forwarder.go` | Dial über den gemeinsamen Dialer, `ProxyConfig.Recorder` |
+| `pkg/sandbox/sandbox_linux.go` | Recorder für `run --record` unter Linux |
+| `pkg/api/config.go`, `pkg/policy/endpoint.go` | `HostAddresses` für den Guard |
+| `Dockerfile.gate` | Image `matchlock gate` auf Alpine mit CA-Bundle |
+
 ## Installation
 
 ```bash

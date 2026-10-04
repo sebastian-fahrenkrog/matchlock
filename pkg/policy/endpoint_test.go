@@ -119,3 +119,13 @@ func TestDialAddress_GuardPassesLiterals(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.2.102:2201", addr)
 }
+
+func TestHostAddresses_ExtendTheGuardsOwnAddresses(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{HostAddresses: []string{"192.168.1.20", "[2001:db8::7]", "not-an-ip"}})
+
+	extra := engine.hostAddresses()
+	require.Len(t, extra, 2, "invalid entries are skipped")
+	assert.Equal(t, "this host's", deniedClass(net.ParseIP("192.168.1.20"), extra))
+	assert.Equal(t, "this host's", deniedClass(net.ParseIP("2001:db8::7"), extra))
+	assert.Equal(t, "", deniedClass(net.ParseIP("192.168.1.21"), extra))
+}
