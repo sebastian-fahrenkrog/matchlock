@@ -51,10 +51,10 @@ func TestGateNATWithoutDNSOrPassthrough(t *testing.T) {
 	require.Len(t, g.natRules(), 3)
 }
 
-func TestGateFilterAcceptsLoopbackAndRedirectedThenDrops(t *testing.T) {
+func TestGateFilterAcceptsLoopbackRedirectedAndRepliesThenDrops(t *testing.T) {
 	g := NewGateRules(GateMark, 8080, 8443, 9000, 5353)
 	rules := g.filterRules()
-	require.Len(t, rules, 3)
+	require.Len(t, rules, 4)
 
 	require.Equal(t, ifname("lo"), rules[0][3].(*expr.Cmp).Data)
 	require.Equal(t, expr.VerdictAccept, rules[0][4].(*expr.Verdict).Kind)
@@ -65,7 +65,15 @@ func TestGateFilterAcceptsLoopbackAndRedirectedThenDrops(t *testing.T) {
 	require.Equal(t, binaryutil.NativeEndian.PutUint32(ctStatusDstNAT), rules[1][3].(*expr.Bitwise).Mask)
 	require.Equal(t, expr.VerdictAccept, rules[1][5].(*expr.Verdict).Kind)
 
-	require.Equal(t, expr.VerdictDrop, rules[2][2].(*expr.Verdict).Kind)
+	// Answers to a connection opened from outside (a published port): reply
+	// direction only, so the agent's own connections never match.
+	dir, ok := rules[2][2].(*expr.Ct)
+	require.True(t, ok)
+	require.Equal(t, expr.CtKeyDIRECTION, dir.Key)
+	require.Equal(t, []byte{ctDirReply}, rules[2][3].(*expr.Cmp).Data)
+	require.Equal(t, expr.VerdictAccept, rules[2][4].(*expr.Verdict).Kind)
+
+	require.Equal(t, expr.VerdictDrop, rules[3][2].(*expr.Verdict).Kind)
 }
 
 func natTargetPort(t *testing.T, rule []expr.Any) uint16 {

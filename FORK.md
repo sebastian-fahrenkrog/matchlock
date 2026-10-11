@@ -273,8 +273,18 @@ Die Regeln (`GateRules`):
   Resolver auf `127.0.0.11` ein, sonst wäre die DNS-Allowlist umgangen.
 - Loopback bleibt unangetastet.
 - TCP 80/443 geht an den MITM, übriges TCP an den Passthrough.
-- `filter OUTPUT` akzeptiert Loopback und alles mit `ct status dnat` und verwirft den Rest
-  (anderes UDP, ICMP, IPv6).
+- `filter OUTPUT` akzeptiert Loopback, alles mit `ct status dnat` und Pakete in
+  Conntrack-Antwortrichtung (`ct direction reply`) und verwirft den Rest (anderes UDP,
+  ICMP, IPv6).
+
+**Antworten auf eingehende Verbindungen.** Ein Dienst, den Sandburg mit `publish` am
+Gate-Container veröffentlicht (`docker run -p` am Gate, `sandburg serve`), bekommt seine
+Verbindungen über Dockers Port-Proxy bzw. DNAT. Seine Antworten verlassen den Namespace
+unmarkiert über `eth0`, sind weder Loopback noch umgeleitet und wurden verworfen: Der Client
+sah den Handshake des Proxys und dann nichts (gemessen 11.10.2026, rootless). `nat OUTPUT`
+sieht Antwortpakete nie (NAT bewertet nur das erste Paket einer Verbindung), also reicht die
+eine Accept-Regel. Sie greift nur in Antwortrichtung: Eine Verbindung, die der Agent selbst
+öffnet, läuft immer in Originalrichtung und wird weiter umgeleitet oder verworfen.
 
 Gemessen am 04.10.2026: Ein Test über `oifname lo` verwarf jedes umgeleitete SYN, weil das
 Paket in diesem Hook noch das Interface der ursprünglichen Route trägt.
@@ -292,7 +302,10 @@ nur im darwin-Stack verdrahtet. `ProxyConfig.Recorder` schließt die Lücke für
 Gemessen am 04.10.2026 (Lima, Ubuntu 24.04 arm64, Docker 29.8, rootless und rootful):
 erlaubtes HTTPS 200, fremder Name `REFUSED`, Platzhalter nur zum freigegebenen Host
 ersetzt (sonst 403), UDP, IPv6 und `SO_MARK` aus dem Agent blockiert, Host-IP nur auf dem
-freigegebenen Port, `vm_id` = Run-ID im Audit, `security-test.sh` grün.
+freigegebenen Port, `vm_id` = Run-ID im Audit, `security-test.sh` grün. Nach der
+Antwortrichtungs-Regel am 11.10.2026 (rootless): veröffentlichter Port über `127.0.0.1`
+erreichbar, über die LAN-Adresse nicht, ausgehend weiter nur Erlaubtes,
+`security-test.sh` 51/0.
 
 | Datei | Änderung |
 |---|---|

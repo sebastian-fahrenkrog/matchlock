@@ -31,7 +31,9 @@ const GateMark = 0x53424752 // "SBGR"
 // otherwise answer every name. Every other unmarked packet to a non-loopback
 // address is redirected in nat OUTPUT: TCP/80 and TCP/443 to the MITM, all
 // other TCP to the passthrough. filter OUTPUT drops whatever unmarked packet was
-// not redirected: other UDP, ICMP and all of IPv6. Loopback stays untouched so
+// not redirected: other UDP, ICMP and all of IPv6 -- except the answers to a
+// connection someone else opened to the namespace (a port published on the
+// gate container), see filterRules. Loopback stays untouched so
 // the agent's own local services keep working; the gate's listeners there
 // enforce the policy themselves.
 type GateRules struct {
@@ -114,9 +116,20 @@ func (g *GateRules) natRules() [][]expr.Any {
 }
 
 // filterRules let the agent reach loopback and whatever nat OUTPUT redirected,
-// and drop everything else it sends. A redirected packet is recognised by its
-// conntrack DNAT status, not by its interface: at this hook it still carries
-// the output interface of the original route.
+// answer connections opened to it from outside, and drop everything else it
+// sends. A redirected packet is recognised by its conntrack DNAT status, not by
+// its interface: at this hook it still carries the output interface of the
+// original route.
+//
+// The answers: a service published on the gate container (docker run -p,
+// Sandburg's "publish") receives its connections through docker's port proxy
+// or DNAT. Its replies leave unmarked through eth0, were neither loopback nor
+// redirected, and were dropped -- the client saw the TCP handshake from the
+// proxy and then nothing (measured with rootless docker, Oct 2026). nat OUTPUT
+// never sees them (nat only judges a connection's first packet), so only this
+// accept is needed. It matches the reply direction of conntrack only: a
+// connection the agent opens itself is always in the original direction, so it
+// cannot use this rule to send anything but answers to a peer that called it.
 func (g *GateRules) filterRules() [][]expr.Any {
 	loopback := append(g.matchAgent(),
 		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
@@ -135,12 +148,21 @@ func (g *GateRules) filterRules() [][]expr.Any {
 		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
 		&expr.Verdict{Kind: expr.VerdictAccept},
 	)
+	reply := append(g.matchAgent(),
+		&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{ctDirReply}},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
 	drop := append(g.matchAgent(), &expr.Verdict{Kind: expr.VerdictDrop})
-	return [][]expr.Any{loopback, redirected, drop}
+	return [][]expr.Any{loopback, redirected, reply, drop}
 }
 
 // ctStatusDstNAT is IPS_DST_NAT from linux/netfilter/nf_conntrack_common.h.
 const ctStatusDstNAT = 1 << 5
+
+// ctDirReply is IP_CT_DIR_REPLY: the packet travels against the direction of
+// the connection's first packet.
+const ctDirReply = 1
 
 // matchAgent matches every packet that does not carry the gate's mark.
 func (g *GateRules) matchAgent() []expr.Any {
