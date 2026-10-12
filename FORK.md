@@ -65,6 +65,11 @@ matchlock run \
     ...
 ```
 
+**StringArray statt StringSlice:** Das Flag ist ein cobra-`StringArray`. `StringSlice` würde
+jeden Wert an Kommas zerlegen und damit die Hostliste in `NAME=/pfad@host1,host2` auseinanderreißen
+(Fehler: `missing @hosts`). `StringArray` lässt den Wert unangetastet; mehrere Secrets
+gibt man durch Wiederholen des Flags an.
+
 **Namenswahl:** Upstream hat inzwischen selbst ein `--secret-file` — das ist eine
 JSON-Datei mit vollständigen Secret-Definitionen und etwas anderes. Deshalb heißt unser
 Flag `--secret-from-file`.

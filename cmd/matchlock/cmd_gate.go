@@ -51,7 +51,7 @@ func init() {
 	f.StringArray("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
 	f.StringArray("secret-placeholder", nil, "Secret placeholder override (NAME=PLACEHOLDER)")
 	f.String("secret-file", "", "JSON file with full secret definitions")
-	f.StringSlice("secret-from-file", nil, "Secret read from a file at request time (NAME=/path@host1,host2)")
+	f.StringArray("secret-from-file", nil, "Secret read from a file at request time (NAME=/path@host1,host2)")
 	f.StringSlice("dns-servers", nil, "Upstream DNS servers (default 8.8.8.8, 8.8.4.4)")
 	f.Bool("allow-private-ips", false, "Allow connections to private IP ranges")
 	f.Bool("guard-resolved-ips", false, "Refuse allowed names that resolve to loopback, link-local, metadata or host addresses")
@@ -131,7 +131,7 @@ func parseGateOptions(cmd *cobra.Command) (*gateOptions, error) {
 	}
 	opts.owner = owner
 
-	secrets, err := parseRunSecrets(array("secret"), array("secret-placeholder"), str("secret-file"), slice("secret-from-file"))
+	secrets, err := parseRunSecrets(array("secret"), array("secret-placeholder"), str("secret-file"), array("secret-from-file"))
 	if err != nil {
 		return nil, err
 	}

@@ -3,8 +3,11 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,4 +38,25 @@ func TestParseFileOwner(t *testing.T) {
 
 	_, err = parseFileOwner("agent")
 	require.ErrorContains(t, err, "want UID:GID")
+}
+
+func TestGateSecretFromFileMultipleHosts(t *testing.T) {
+	// StringArray keeps the comma-separated host list in one value.
+	require.NoError(t, gateCmd.Flags().Set("run-id", "r1"))
+	require.NoError(t, gateCmd.Flags().Set("ca-out", "/tmp/ca.crt"))
+	f := filepath.Join(t.TempDir(), "tok")
+	require.NoError(t, os.WriteFile(f, []byte("x"), 0o600))
+	require.NoError(t, gateCmd.Flags().Set("secret-from-file", "SANDBURG_RC_ACCESS="+f+"@api.anthropic.com,bridge.claudeusercontent.com"))
+	t.Cleanup(func() {
+		_ = gateCmd.Flags().Set("run-id", "")
+		_ = gateCmd.Flags().Set("ca-out", "")
+		_ = gateCmd.Flags().Lookup("secret-from-file").Value.(pflag.SliceValue).Replace(nil)
+	})
+
+	opts, err := parseGateOptions(gateCmd)
+	require.NoError(t, err)
+	s, ok := opts.network.Secrets["SANDBURG_RC_ACCESS"]
+	require.True(t, ok)
+	require.Equal(t, f, s.ValueFile)
+	require.Equal(t, []string{"api.anthropic.com", "bridge.claudeusercontent.com"}, s.Hosts)
 }

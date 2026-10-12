@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -364,4 +365,23 @@ func TestLoadSecretsFileTrimsHosts(t *testing.T) {
 	require.Contains(t, secrets, "GH_TOKEN")
 	assert.Equal(t, "gho_sandbox_placeholder", secrets["GH_TOKEN"].Placeholder)
 	assert.Equal(t, []string{"github.com", "api.github.com"}, secrets["GH_TOKEN"].Hosts)
+}
+
+func TestRunSecretFromFileMultipleHosts(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "tok")
+	require.NoError(t, os.WriteFile(f, []byte("x"), 0o600))
+	spec := "SANDBURG_RC_ACCESS=" + f + "@api.anthropic.com,bridge.claudeusercontent.com"
+
+	require.NoError(t, runCmd.Flags().Set("secret-from-file", spec))
+	t.Cleanup(func() { _ = runCmd.Flags().Lookup("secret-from-file").Value.(pflag.SliceValue).Replace(nil) })
+
+	specs, err := runCmd.Flags().GetStringArray("secret-from-file")
+	require.NoError(t, err)
+	require.Contains(t, specs, spec)
+
+	secrets, err := parseRunSecrets(nil, nil, "", []string{spec})
+	require.NoError(t, err)
+	s := secrets["SANDBURG_RC_ACCESS"]
+	assert.Equal(t, f, s.ValueFile)
+	assert.Equal(t, []string{"api.anthropic.com", "bridge.claudeusercontent.com"}, s.Hosts)
 }
