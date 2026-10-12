@@ -198,8 +198,99 @@ func TestWebSocket_GuestCloseTearsDownUpstream(t *testing.T) {
 	}
 }
 
-// TestWebSocket_AuditEntry: a closed WebSocket connection produces one network
-// event with method WS, status 101 and the byte counts per direction.
+// readWSEvent pulls the next network event off the channel, failing the test on
+// timeout.
+func readWSEvent(t *testing.T, events <-chan api.Event) *api.NetworkEvent {
+	t.Helper()
+	select {
+	case ev := <-events:
+		require.NotNil(t, ev.Network)
+		return ev.Network
+	case <-time.After(5 * time.Second):
+		t.Fatal("no audit event for the WebSocket connection")
+		return nil
+	}
+}
+
+// TestWebSocket_AuditEntryOnOpen: the connection is audited the moment the 101
+// is relayed, before any frame is exchanged and before either side closes. An
+// RC WebSocket stays open for the whole session, so the entry must not wait for
+// the close -- otherwise a still-open or VM-terminated tunnel leaves no trace.
+func TestWebSocket_AuditEntryOnOpen(t *testing.T) {
+	events := make(chan api.Event, 4)
+	// Upstream accepts the upgrade and then holds the connection open, never
+	// closing, so any audit entry we see can only be the open-time one.
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	port := wsUpstream(t, nil, func(conn net.Conn, br *bufio.Reader) {
+		io.WriteString(conn, wsUpgradeAccept)
+		<-hold
+	})
+	interceptor := NewHTTPInterceptor(allowLocalhostEngine(), events, nil)
+
+	guest := dialWSUpgrade(t, interceptor, port, "")
+	resp, err := http.ReadResponse(bufio.NewReader(guest), nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	ev := readWSEvent(t, events)
+	assert.Equal(t, "WS", ev.Method)
+	assert.Equal(t, http.StatusSwitchingProtocols, ev.StatusCode)
+	assert.Equal(t, "127.0.0.1", ev.Host)
+	assert.Contains(t, ev.URL, "/chat")
+	assert.False(t, ev.Blocked)
+	assert.Equal(t, int64(0), ev.RequestBytes, "open entry carries no bytes yet")
+	assert.Equal(t, int64(0), ev.ResponseBytes, "open entry carries no bytes yet")
+}
+
+// TestWebSocket_AuditEntrySecure drives tunnelWebSocket on the secure path
+// (secure=true) the way HandleHTTPS and the darwin stack's port-443 route do.
+// A full TLS end-to-end run is not reproducible under Linux -- the upstream dial
+// verifies against the system roots -- so this covers the shared relay directly:
+// the open and close entries must use the wss:// scheme.
+func TestWebSocket_AuditEntrySecure(t *testing.T) {
+	events := make(chan api.Event, 4)
+	interceptor := NewHTTPInterceptor(allowLocalhostEngine(), events, nil)
+
+	guestConn, guestClient := net.Pipe()
+	upstreamConn, upstreamPeer := net.Pipe()
+	t.Cleanup(func() { guestClient.Close(); upstreamPeer.Close() })
+	// Drain anything the relay forwards upstream so its io.Copy never blocks on
+	// the synchronous pipe.
+	go io.Copy(io.Discard, upstreamPeer)
+
+	req, err := http.NewRequest(http.MethodGet, "https://bridge.example/chat", nil)
+	require.NoError(t, err)
+	resp := &http.Response{
+		StatusCode: http.StatusSwitchingProtocols,
+		ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{"Upgrade": {"websocket"}, "Connection": {"Upgrade"}},
+	}
+
+	go interceptor.tunnelWebSocket(guestConn, bufio.NewReader(guestConn),
+		upstreamConn, bufio.NewReader(upstreamConn), resp, nil,
+		"bridge.example", req, true, time.Now())
+
+	head, err := http.ReadResponse(bufio.NewReader(guestClient), nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, head.StatusCode)
+
+	open := readWSEvent(t, events)
+	assert.Equal(t, "WS", open.Method)
+	assert.Equal(t, "bridge.example", open.Host)
+	assert.Equal(t, "wss://bridge.example/chat", open.URL)
+	assert.Equal(t, int64(0), open.RequestBytes)
+	assert.Equal(t, int64(0), open.ResponseBytes)
+
+	// Closing the guest end ends the tunnel; the close entry keeps the scheme.
+	guestClient.Close()
+	closed := readWSEvent(t, events)
+	assert.Equal(t, "WS", closed.Method)
+	assert.Equal(t, "wss://bridge.example/chat", closed.URL)
+}
+
+// TestWebSocket_AuditEntry: a WebSocket connection produces an open entry (no
+// bytes) and, once it closes, a second entry with the byte counts per direction.
 func TestWebSocket_AuditEntry(t *testing.T) {
 	events := make(chan api.Event, 4)
 	port := wsUpstream(t, nil, func(conn net.Conn, br *bufio.Reader) {
@@ -214,6 +305,13 @@ func TestWebSocket_AuditEntry(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
 
+	// First event: the open entry, before any bytes flow.
+	open := readWSEvent(t, events)
+	assert.Equal(t, "WS", open.Method)
+	assert.Equal(t, http.StatusSwitchingProtocols, open.StatusCode)
+	assert.Equal(t, int64(0), open.RequestBytes)
+	assert.Equal(t, int64(0), open.ResponseBytes)
+
 	_, err = io.WriteString(guest, "ping")
 	require.NoError(t, err)
 	echoed := make([]byte, 4)
@@ -222,16 +320,12 @@ func TestWebSocket_AuditEntry(t *testing.T) {
 
 	guest.Close()
 
-	select {
-	case ev := <-events:
-		require.NotNil(t, ev.Network)
-		assert.Equal(t, "WS", ev.Network.Method)
-		assert.Equal(t, http.StatusSwitchingProtocols, ev.Network.StatusCode)
-		assert.Equal(t, "127.0.0.1", ev.Network.Host)
-		assert.Contains(t, ev.Network.URL, "/chat")
-		assert.GreaterOrEqual(t, ev.Network.RequestBytes, int64(4))
-		assert.False(t, ev.Network.Blocked)
-	case <-time.After(5 * time.Second):
-		t.Fatal("no audit event for the WebSocket connection")
-	}
+	// Second event: the close entry, carrying the byte counts.
+	closed := readWSEvent(t, events)
+	assert.Equal(t, "WS", closed.Method)
+	assert.Equal(t, http.StatusSwitchingProtocols, closed.StatusCode)
+	assert.Equal(t, "127.0.0.1", closed.Host)
+	assert.Contains(t, closed.URL, "/chat")
+	assert.GreaterOrEqual(t, closed.RequestBytes, int64(4))
+	assert.False(t, closed.Blocked)
 }

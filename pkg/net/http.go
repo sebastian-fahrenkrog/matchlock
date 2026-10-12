@@ -464,8 +464,9 @@ func headerHasToken(h http.Header, key, token string) bool {
 // side closes. The policy already ran on the upgrade request (headers and query
 // get secret substitution like any request), but frames exchanged AFTER the
 // upgrade are opaque: a placeholder that first appears inside a frame is NOT
-// substituted. One audit entry records the connection — host, path, start, end
-// and bytes per direction — never frame contents.
+// substituted. Two audit entries record the connection — one at open (status
+// 101, no bytes yet) and one at close (byte counts per direction) — never frame
+// contents.
 //
 // guestReader and upstreamReader are the buffered readers used to parse the
 // handshake; they may already hold the first frames, so the copy drains them
@@ -480,6 +481,13 @@ func (i *HTTPInterceptor) tunnelWebSocket(guestConn net.Conn, guestReader *bufio
 	// Record the handshake like a streamed exchange: placeholders, no body.
 	audit.CaptureResponse(exchange, resp, true, time.Since(start))
 	i.writeRecord(exchange)
+
+	// Audit the connection the moment it opens. An RC WebSocket is long-lived:
+	// the byte counts below are only known when it closes, and a tunnel that is
+	// still open -- or torn down when the VM ends, after the event consumer has
+	// already stopped -- would otherwise leave no audit trace at all. The close
+	// emits a second entry carrying the per-direction byte counts.
+	i.emitWebSocketEvent(req, host, secure, 0, 0, time.Since(start))
 
 	var toUpstream, toGuest int64
 	done := make(chan struct{}, 2)
@@ -502,8 +510,9 @@ func (i *HTTPInterceptor) tunnelWebSocket(guestConn net.Conn, guestReader *bufio
 	i.emitWebSocketEvent(req, host, secure, toUpstream, toGuest, time.Since(start))
 }
 
-// emitWebSocketEvent records one closed WebSocket connection: method "WS",
-// status 101, and the byte count for each direction. Frame contents are never
+// emitWebSocketEvent records a WebSocket connection: method "WS", status 101,
+// and the byte count for each direction. It is emitted once at open (zero
+// bytes) and once at close (the per-direction totals). Frame contents are never
 // logged.
 func (i *HTTPInterceptor) emitWebSocketEvent(req *http.Request, host string, secure bool, toUpstream, toGuest int64, duration time.Duration) {
 	if i.events == nil {

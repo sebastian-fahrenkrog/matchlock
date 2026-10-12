@@ -349,11 +349,21 @@ die ersten Frames enthalten (Gast wie Server dürfen sofort nach dem `101` sende
 tunnelt der Code über die **Reader**, nicht über die nackten Verbindungen — sonst gingen
 genau diese ersten Frames verloren.
 
-**Audit.** Jede WS-Verbindung bekommt beim Schließen einen Eintrag wie bei Patch 3/4:
-`method = 'WS'`, Status `101`, Host, Pfad (`ws://`/`wss://…`), Dauer und Bytes je Richtung
-(`request_bytes` = Gast→Upstream, `response_bytes` = Upstream→Gast). Der Handshake selbst
-wird — mit Platzhaltern, ohne Body — wie ein gestreamter Austausch in den `--record`-
-Mitschnitt geschrieben. **Frame-Inhalte werden nie protokolliert.**
+**Audit.** Jede WS-Verbindung bekommt **zwei** Einträge wie bei Patch 3/4, beide mit
+`method = 'WS'`, Status `101`, Host und Pfad (`ws://`/`wss://…`): einen **beim Öffnen**,
+sobald das `101` an den Gast geht (Bytes noch `0`), und einen **beim Schließen** mit Dauer
+und Bytes je Richtung (`request_bytes` = Gast→Upstream, `response_bytes` = Upstream→Gast).
+Der Handshake selbst wird — mit Platzhaltern, ohne Body — wie ein gestreamter Austausch in
+den `--record`-Mitschnitt geschrieben. **Frame-Inhalte werden nie protokolliert.**
+
+Der Eintrag beim Öffnen ist nötig, weil eine RC-Verbindung langlebig ist: die Byte-Zahlen
+stehen erst beim Schließen fest, und ein Tunnel, der beim Prüfen noch offen ist — oder beim
+Beenden der VM abgerissen wird, **nachdem** der Ereignis-Konsument (`audit.Consume`) über
+den beendeten Kontext schon zurückgekehrt und `s.events` geschlossen ist — hinterließe sonst
+überhaupt keine Spur. Mit dem Eintrag beim Öffnen steht die Verbindung im Audit, sobald sie
+zustande kommt; der zweite Eintrag trägt die Bytes nach, wenn er es noch schafft. Das war
+die Ursache dafür, dass RC-Verbindungen (`bridge.claudeusercontent.com`) trotz aktivem
+Remote Control weder als `method='WS'` noch sonst in der Audit-DB auftauchten.
 
 **Grenze (dokumentiert).** Ersetzt wird nur im Upgrade-**Request** (Header/Query). Ein
 Platzhalter, der erst **nach** dem Upgrade in einem Frame auftaucht, wird **nicht** ersetzt —
@@ -374,8 +384,8 @@ Tunnel-Muster (Handshake prüfen, dann roh in beide Richtungen kopieren) entspri
 
 | Datei | Änderung |
 |---|---|
-| `pkg/net/http.go` | `isWebSocketUpgrade`, `headerHasToken`, `tunnelWebSocket`, `emitWebSocketEvent`, `writeResponseHead`; `101`-Abzweig in `HandleHTTP` und `HandleHTTPS` |
-| `pkg/net/http_websocket_test.go` | Ersetzung im Header, bidirektionaler Echo, Policy-Ablehnung, Upstream ohne `101`, Schließen auf beiden Seiten, Audit-Eintrag |
+| `pkg/net/http.go` | `isWebSocketUpgrade`, `headerHasToken`, `tunnelWebSocket` (Audit beim Öffnen **und** Schließen), `emitWebSocketEvent`, `writeResponseHead`; `101`-Abzweig in `HandleHTTP` und `HandleHTTPS` |
+| `pkg/net/http_websocket_test.go` | Ersetzung im Header, bidirektionaler Echo, Policy-Ablehnung, Upstream ohne `101`, Schließen auf beiden Seiten, Audit beim Öffnen (offener Tunnel) und beim Schließen |
 
 ## Installation
 
