@@ -66,10 +66,10 @@ func (g *GateRules) Setup() error {
 
 	g.natTable = conn.AddTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: gateTableName})
 	natChain := conn.AddChain(&nftables.Chain{
-		Name:     chainOutput,
-		Table:    g.natTable,
-		Type:     nftables.ChainTypeNAT,
-		Hooknum:  nftables.ChainHookOutput,
+		Name:    chainOutput,
+		Table:   g.natTable,
+		Type:    nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookOutput,
 		// Ahead of Docker's own DOCKER_OUTPUT (dstnat), which would hand
 		// 127.0.0.11:53 to the embedded resolver first.
 		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest - 10),

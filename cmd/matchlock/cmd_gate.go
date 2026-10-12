@@ -68,13 +68,13 @@ func init() {
 }
 
 type gateOptions struct {
-	network  *api.NetworkConfig
-	auditDB  string
-	owner    *fileOwner
-	runID    string
-	caOut    string
-	image    string
-	work     string
+	network *api.NetworkConfig
+	auditDB string
+	owner   *fileOwner
+	runID   string
+	caOut   string
+	image   string
+	work    string
 }
 
 func runGate(cmd *cobra.Command, _ []string) error {
