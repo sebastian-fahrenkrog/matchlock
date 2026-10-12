@@ -3,14 +3,19 @@
 #   docker build -f Dockerfile.gate -t matchlock-gate:latest .
 #
 # ca-certificates: the MITM verifies upstream TLS against the system roots.
-FROM golang:1.25-alpine AS build
+#
+# Base images are pinned by digest (the multi-arch index, valid for amd64 and arm64), so
+# a rebuild never pulls something newer by surprise. To bump one:
+#   docker buildx imagetools inspect golang:1.25-alpine   (top-level "Digest")
+# and commit the new digest.
+FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/matchlock ./cmd/matchlock
 
-FROM alpine:3.22
+FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/matchlock /usr/local/bin/matchlock
 ENTRYPOINT ["/usr/local/bin/matchlock", "gate"]
