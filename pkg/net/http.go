@@ -113,6 +113,15 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
+		// A 101 to an upgrade request switches the connection to a raw
+		// bidirectional tunnel. Policy and secret substitution already ran on
+		// the upgrade request above; the pooled connection is consumed by the
+		// tunnel and never returned to the pool.
+		if resp.StatusCode == http.StatusSwitchingProtocols && isWebSocketUpgrade(modifiedReq) {
+			i.tunnelWebSocket(guestConn, guestReader, pc.conn, pc.reader, resp, exchange, host, modifiedReq, false, start)
+			return
+		}
+
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
 		if err != nil {
 			i.emitBlockedEvent(modifiedReq, host, err.Error())
@@ -236,6 +245,12 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 		resp, err := http.ReadResponse(serverReader, modifiedReq)
 		if err != nil {
+			return
+		}
+
+		// Upgrade to a raw tunnel on 101; see HandleHTTP for the rationale.
+		if resp.StatusCode == http.StatusSwitchingProtocols && isWebSocketUpgrade(modifiedReq) {
+			i.tunnelWebSocket(tlsConn, guestReader, realConn, serverReader, resp, exchange, serverName, modifiedReq, true, start)
 			return
 		}
 
@@ -416,6 +431,122 @@ func writeHTTPError(conn net.Conn, status int, message string) {
 func writeResponse(conn net.Conn, resp *http.Response) error {
 	bw := bufio.NewWriterSize(conn, 64*1024)
 	if err := resp.Write(bw); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+// isWebSocketUpgrade reports whether a request asks to switch to the WebSocket
+// protocol: "Connection: Upgrade" (a comma-separated, case-insensitive token
+// list) together with "Upgrade: websocket".
+func isWebSocketUpgrade(req *http.Request) bool {
+	if !headerHasToken(req.Header, "Connection", "upgrade") {
+		return false
+	}
+	return headerHasToken(req.Header, "Upgrade", "websocket")
+}
+
+// headerHasToken reports whether a header value contains token as one of its
+// comma-separated, case-insensitive entries.
+func headerHasToken(h http.Header, key, token string) bool {
+	for _, value := range h.Values(key) {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tunnelWebSocket relays an accepted WebSocket upgrade. The 101 response is
+// handed back to the guest, then bytes flow raw in both directions until either
+// side closes. The policy already ran on the upgrade request (headers and query
+// get secret substitution like any request), but frames exchanged AFTER the
+// upgrade are opaque: a placeholder that first appears inside a frame is NOT
+// substituted. One audit entry records the connection — host, path, start, end
+// and bytes per direction — never frame contents.
+//
+// guestReader and upstreamReader are the buffered readers used to parse the
+// handshake; they may already hold the first frames, so the copy drains them
+// before touching the raw connections.
+func (i *HTTPInterceptor) tunnelWebSocket(guestConn net.Conn, guestReader *bufio.Reader, upstreamConn net.Conn, upstreamReader *bufio.Reader, resp *http.Response, exchange *audit.Exchange, host string, req *http.Request, secure bool, start time.Time) {
+	// Relay the 101 before any frame is forwarded.
+	if err := writeResponseHead(guestConn, resp); err != nil {
+		upstreamConn.Close()
+		return
+	}
+
+	// Record the handshake like a streamed exchange: placeholders, no body.
+	audit.CaptureResponse(exchange, resp, true, time.Since(start))
+	i.writeRecord(exchange)
+
+	var toUpstream, toGuest int64
+	done := make(chan struct{}, 2)
+	go func() {
+		toUpstream, _ = io.Copy(upstreamConn, guestReader)
+		done <- struct{}{}
+	}()
+	go func() {
+		toGuest, _ = io.Copy(guestConn, upstreamReader)
+		done <- struct{}{}
+	}()
+
+	// When one direction ends, tear both connections down so the other
+	// io.Copy returns; then wait for it to keep the byte counts well-defined.
+	<-done
+	guestConn.Close()
+	upstreamConn.Close()
+	<-done
+
+	i.emitWebSocketEvent(req, host, secure, toUpstream, toGuest, time.Since(start))
+}
+
+// emitWebSocketEvent records one closed WebSocket connection: method "WS",
+// status 101, and the byte count for each direction. Frame contents are never
+// logged.
+func (i *HTTPInterceptor) emitWebSocketEvent(req *http.Request, host string, secure bool, toUpstream, toGuest int64, duration time.Duration) {
+	if i.events == nil {
+		return
+	}
+
+	scheme := "ws"
+	if secure {
+		scheme = "wss"
+	}
+
+	select {
+	case i.events <- api.Event{
+		Type:      "network",
+		Timestamp: time.Now().Unix(),
+		Network: &api.NetworkEvent{
+			Method:        "WS",
+			URL:           fmt.Sprintf("%s://%s%s", scheme, host, req.URL.Path),
+			Host:          host,
+			StatusCode:    http.StatusSwitchingProtocols,
+			RequestBytes:  toUpstream,
+			ResponseBytes: toGuest,
+			DurationMS:    duration.Milliseconds(),
+			Blocked:       false,
+		},
+	}:
+	default:
+	}
+}
+
+// writeResponseHead writes a response's status line and headers with no body,
+// used to hand a 101 Switching Protocols back to the guest before the raw
+// tunnel takes over the connection.
+func writeResponseHead(conn net.Conn, resp *http.Response) error {
+	bw := bufio.NewWriter(conn)
+	statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, http.StatusText(resp.StatusCode))
+	if _, err := bw.WriteString(statusLine); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(bw); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\r\n"); err != nil {
 		return err
 	}
 	return bw.Flush()

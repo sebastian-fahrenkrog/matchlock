@@ -317,6 +317,61 @@ erreichbar, über die LAN-Adresse nicht, ausgehend weiter nur Erlaubtes,
 | `pkg/api/config.go`, `pkg/policy/endpoint.go` | `HostAddresses` für den Guard |
 | `Dockerfile.gate` | Image `matchlock gate` auf Alpine mit CA-Bundle |
 
+## Patch 9: WebSocket durch den MITM
+
+**Warum.** Claude Code Remote Control steuert über eine WebSocket-Verbindung
+(`wss://bridge.claudeusercontent.com`, Env-Override `BRIDGE_BASE_URL`). Sandburg legt in
+die VM eine `.credentials.json` mit einem **Platzhalter**-Token (Patch 2); matchlock ersetzt
+den Platzhalter auf dem Mac erst beim ausgehenden Request. Das setzt voraus, dass der MITM
+den Upgrade-Request überhaupt sieht und weiterreicht. Bisher behandelte der Interceptor
+jeden Verkehr strikt als Request → Response: `isStreamingResponse` kannte kein
+`101 Switching Protocols`, und gestreamt wurde nur in eine Richtung. Ein WebSocket-Upgrade
+lief damit ins Leere — die RC-Verbindung kam nie zustande, ohne dass je ein Token ersetzt
+wurde.
+
+**Was.** Der Interceptor erkennt den Upgrade-Request (`Connection: Upgrade` als
+Komma-Token, `Upgrade: websocket`, jeweils unabhängig von Groß-/Kleinschreibung). Policy-
+und Secret-Ersetzung laufen wie bei jedem Request — also im Header und in der Query, mit
+`@host`-Bindung; der RC-Token sitzt im Header des Upgrades und wird genau dort ersetzt.
+Antwortet der Upstream mit `101`, reicht der Proxy die Antwort an den Gast und schaltet die
+Verbindung danach auf einen **rohen, bidirektionalen Tunnel** (`io.Copy` in beide
+Richtungen). Endet eine Richtung, werden beide Verbindungen geschlossen, damit die andere
+`io.Copy` zurückkehrt; erst dann stehen die Byte-Zahlen fest. Antwortet der Upstream **nicht**
+mit `101` (z. B. `426`), bleibt alles beim Alten: ganz normaler Request/Response, kein Tunnel.
+
+Die beiden `bufio.Reader`, mit denen Handshake und Antwort geparst werden, können bereits
+die ersten Frames enthalten (Gast wie Server dürfen sofort nach dem `101` senden). Deshalb
+tunnelt der Code über die **Reader**, nicht über die nackten Verbindungen — sonst gingen
+genau diese ersten Frames verloren.
+
+**Audit.** Jede WS-Verbindung bekommt beim Schließen einen Eintrag wie bei Patch 3/4:
+`method = 'WS'`, Status `101`, Host, Pfad (`ws://`/`wss://…`), Dauer und Bytes je Richtung
+(`request_bytes` = Gast→Upstream, `response_bytes` = Upstream→Gast). Der Handshake selbst
+wird — mit Platzhaltern, ohne Body — wie ein gestreamter Austausch in den `--record`-
+Mitschnitt geschrieben. **Frame-Inhalte werden nie protokolliert.**
+
+**Grenze (dokumentiert).** Ersetzt wird nur im Upgrade-**Request** (Header/Query). Ein
+Platzhalter, der erst **nach** dem Upgrade in einem Frame auftaucht, wird **nicht** ersetzt —
+die Frames sind ab da für den Proxy undurchsichtig (Masking, Fragmentierung, binär). Für RC
+genügt das: der Token reist im Upgrade-Header. Wie bei den langen Streams (SSE) setzt der
+Tunnel bewusst **kein** Leerlauf-Zeitlimit; eine RC-Verbindung ist langlebig, beendet wird
+sie durch Schließen einer Seite, nicht durch eine Uhr.
+
+**Wo.** Alle drei MITM-Wege laufen durch denselben Interceptor
+(`HandleHTTP`/`HandleHTTPS`), daher genügt eine Stelle: Linux-nftables (`proxy.go`),
+macOS-gVisor (`stack_darwin.go`) und `matchlock gate` sind damit abgedeckt. Eine Ausnahme in
+`nftables_gate.go` ist nicht nötig — 443 soll weiter in den MITM, der WS jetzt selbst
+terminiert und tunnelt.
+
+**Upstream-Bezug.** Kein direktes Vorbild; Upstream kennt WebSocket im MITM nicht. Das
+Tunnel-Muster (Handshake prüfen, dann roh in beide Richtungen kopieren) entspricht dem
+üblichen `CONNECT`-/Upgrade-Proxy-Vorgehen der Go-Standardbibliothek.
+
+| Datei | Änderung |
+|---|---|
+| `pkg/net/http.go` | `isWebSocketUpgrade`, `headerHasToken`, `tunnelWebSocket`, `emitWebSocketEvent`, `writeResponseHead`; `101`-Abzweig in `HandleHTTP` und `HandleHTTPS` |
+| `pkg/net/http_websocket_test.go` | Ersetzung im Header, bidirektionaler Echo, Policy-Ablehnung, Upstream ohne `101`, Schließen auf beiden Seiten, Audit-Eintrag |
+
 ## Installation
 
 ```bash
