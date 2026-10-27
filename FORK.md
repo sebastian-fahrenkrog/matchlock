@@ -322,6 +322,23 @@ erreichbar, über die LAN-Adresse nicht, ausgehend weiter nur Erlaubtes,
 | `pkg/api/config.go`, `pkg/policy/endpoint.go` | `HostAddresses` für den Guard |
 | `Dockerfile.gate` | Image `matchlock gate` auf Alpine mit CA-Bundle |
 
+### Upstream-DNS des Gates (27.10.2026)
+
+Das Gate übernahm den VM-Default 8.8.8.8/8.8.4.4 als Upstream für seinen DNS-Forwarder.
+Auf einem Host, der dem Runner-Nutzer nur den eigenen Resolver erlaubt (nftables
+`meta skuid sb-poc udp dport 53 ip daddr 127.0.0.53 accept`, alles andere drop), lief jede
+Namensauflösung im Sandkasten in den Timeout — HTTPS aus dem Agenten: `000`, Mitschnitt leer.
+Dockers eingebetteter Resolver (127.0.0.11) ist kein Ersatz: er wählt seine externen Server
+aus dem Netzraum des Containers, **unmarkiert**, und landet damit in der Umleitung des Gates
+— SERVFAIL nach 4 s Schleife (gemessen unter rootless Docker mit slirp4netns).
+
+Jetzt: ohne `--dns-servers` liest das Gate `/etc/resolv.conf` (`ResolvConfUpstreams`,
+`pkg/net/resolvconf_gate.go`): die `nameserver`-Zeilen, wobei 127.0.0.11 durch die externen
+Server aus Dockers Kommentar `# ExtServers: [10.0.2.3]` ersetzt wird — die wählt das Gate
+selbst, markiert, ohne Schleife. `host(…)`-Einträge (Loopback des Hosts, von Docker aus dem
+Host-Netzraum erreicht) bleiben beim eingebetteten Resolver. Erst wenn die Datei nichts
+hergibt, gilt der alte Default. Die Wahl steht beim Start im Log (`dns upstream: …`).
+
 ## Patch 9: WebSocket durch den MITM
 
 **Warum.** Claude Code Remote Control steuert über eine WebSocket-Verbindung

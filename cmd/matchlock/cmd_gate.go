@@ -52,7 +52,7 @@ func init() {
 	f.StringArray("secret-placeholder", nil, "Secret placeholder override (NAME=PLACEHOLDER)")
 	f.String("secret-file", "", "JSON file with full secret definitions")
 	f.StringArray("secret-from-file", nil, "Secret read from a file at request time (NAME=/path@host1,host2)")
-	f.StringSlice("dns-servers", nil, "Upstream DNS servers (default 8.8.8.8, 8.8.4.4)")
+	f.StringSlice("dns-servers", nil, "Upstream DNS servers (default: the container's /etc/resolv.conf, with Docker's external servers in place of its embedded resolver; else 8.8.8.8, 8.8.4.4)")
 	f.Bool("allow-private-ips", false, "Allow connections to private IP ranges")
 	f.Bool("guard-resolved-ips", false, "Refuse allowed names that resolve to loopback, link-local, metadata or host addresses")
 	f.Bool("dns-allowlist", false, "Answer DNS only for names matching --allow-host")
@@ -186,11 +186,24 @@ func startGate(opts *gateOptions) (*gate, error) {
 	}
 	g.proxy.Start()
 
-	if g.dns, err = sandboxnet.NewDNSForwarder("127.0.0.1", opts.network.GetDNSServers()); err != nil {
+	// Upstream resolvers: --dns-servers, else what the container's resolv.conf
+	// says (Docker's external servers in place of its embedded resolver, see
+	// ResolvConfUpstreams), else the VM path's defaults. The VM default of
+	// 8.8.8.8 is not a given here: a host that only lets this user reach its
+	// own resolver drops it, and every name in the sandbox then times out.
+	dnsServers := opts.network.DNSServers
+	if len(dnsServers) == 0 {
+		dnsServers = sandboxnet.ResolvConfUpstreams("/etc/resolv.conf")
+	}
+	if len(dnsServers) == 0 {
+		dnsServers = opts.network.GetDNSServers()
+	}
+	if g.dns, err = sandboxnet.NewDNSForwarder("127.0.0.1", dnsServers); err != nil {
 		g.close()
 		return nil, fmt.Errorf("dns forwarder: %w", err)
 	}
 	g.dns.SetNameFilter(g.policy.IsNameResolvable)
+	fmt.Fprintf(os.Stderr, "dns upstream: %s\n", strings.Join(dnsServers, ", "))
 
 	g.rules = sandboxnet.NewGateRules(sandboxnet.GateMark, g.proxy.HTTPPort(), g.proxy.HTTPSPort(), g.proxy.PassthroughPort(), g.dns.Port())
 	if err := g.rules.Setup(); err != nil {
