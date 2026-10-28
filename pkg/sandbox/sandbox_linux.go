@@ -354,7 +354,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 		proxy.Start()
 
-		dnsForwarder, err = sandboxnet.NewDNSForwarder(gatewayIP, config.Network.GetDNSServers())
+		// The guest keeps the configured servers in its resolv.conf (and the
+		// nftables redirect matches them), but the forwarder itself dials from
+		// the host: without --dns-servers it asks the host's own resolvers
+		// (ResolvConfUpstreams), as the gate does. A host that lets this user
+		// reach only its local resolver dropped the default 8.8.8.8, and every
+		// name in the VM timed out (Firecracker, 28 Oct 2026).
+		upstreams := config.Network.DNSServers
+		if len(upstreams) == 0 {
+			upstreams = sandboxnet.ResolvConfUpstreams("/etc/resolv.conf")
+		}
+		if len(upstreams) == 0 {
+			upstreams = config.Network.GetDNSServers()
+		}
+		dnsForwarder, err = sandboxnet.NewDNSForwarder(gatewayIP, upstreams)
 		if err != nil {
 			proxy.Close()
 			machine.Close(ctx)
