@@ -111,6 +111,48 @@ type NetworkConfig struct {
 	// the interface list already holds them; the gate runs in a container,
 	// whose interfaces do not include the host's LAN address.
 	HostAddresses []string `json:"host_addresses,omitempty"`
+	// DenyRequests refuses single requests on hosts the allowlist admits,
+	// before any secret is put in (patch 10). One entry per rule:
+	// "METHOD HOST PATH-REGEX" -- METHOD upper-case or "*" for any, HOST a
+	// glob as in AllowedHosts, PATH-REGEX matched against the cleaned,
+	// lower-cased request path (no query). Meant for endpoints that mint a
+	// credential on a host the sandbox has to reach anyway: a GitHub deploy
+	// key, a runner registration token, a webhook. An entry that does not
+	// parse fails Validate, so a broken deny never turns into no deny.
+	DenyRequests []string `json:"deny_requests,omitempty"`
+}
+
+// ValidateDenyRequests checks every DenyRequests entry: three fields, a
+// method that is "*" or letters only, a host, a path regexp that compiles.
+func ValidateDenyRequests(entries []string) error {
+	for _, entry := range entries {
+		if _, _, _, err := ParseDenyRequest(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ParseDenyRequest splits a DenyRequests entry into method (upper-cased, "*"
+// for any), host glob and compiled path regexp.
+func ParseDenyRequest(entry string) (string, string, *regexp.Regexp, error) {
+	fields := strings.Fields(entry)
+	if len(fields) != 3 {
+		return "", "", nil, errx.With(ErrInvalidConfig, ": deny_requests entry %q: expected \"METHOD HOST PATH-REGEX\"", entry)
+	}
+	method := strings.ToUpper(fields[0])
+	if method != "*" {
+		for _, r := range method {
+			if r < 'A' || r > 'Z' {
+				return "", "", nil, errx.With(ErrInvalidConfig, ": deny_requests entry %q: method must be letters or *", entry)
+			}
+		}
+	}
+	re, err := regexp.Compile(fields[2])
+	if err != nil {
+		return "", "", nil, errx.With(ErrInvalidConfig, ": deny_requests entry %q: %v", entry, err)
+	}
+	return method, fields[1], re, nil
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.
@@ -136,6 +178,9 @@ func (n *NetworkConfig) Validate() error {
 	}
 	if err := ValidateSecretPlaceholders(n.Secrets); err != nil {
 		return errx.With(ErrInvalidConfig, ": %v", err)
+	}
+	if err := ValidateDenyRequests(n.DenyRequests); err != nil {
+		return err
 	}
 	if !n.NoNetwork {
 		return nil

@@ -404,6 +404,55 @@ Tunnel-Muster (Handshake prüfen, dann roh in beide Richtungen kopieren) entspri
 | `pkg/net/http.go` | `isWebSocketUpgrade`, `headerHasToken`, `tunnelWebSocket` (Audit beim Öffnen **und** Schließen), `emitWebSocketEvent`, `writeResponseHead`; `101`-Abzweig in `HandleHTTP` und `HandleHTTPS` |
 | `pkg/net/http_websocket_test.go` | Ersetzung im Header, bidirektionaler Echo, Policy-Ablehnung, Upstream ohne `101`, Schließen auf beiden Seiten, Audit beim Öffnen (offener Tunnel) und beim Schließen |
 
+## Patch 10: `--deny-request` und Host-/SNI-Abgleich im MITM
+
+**Warum.** Zwei Lücken, die devvms Proxy (gelesen am 07.11.2026) schließt und die hier
+fehlten. Erstens: ein Token, das für `api.github.com` freigegeben ist, kann dort einen
+SSH-Key, einen Deploy-Key, ein Runner-Registrierungstoken oder einen Webhook anlegen — ein
+Credential, das den Lauf und die Rotation des Tokens überlebt. Die Allowlist kann den Host
+nicht sperren (jede Basis-Allowlist trägt GitHub), und der Klassifikator beurteilt nur
+SSH-Befehle, keine HTTP-Pfade. Zweitens: im HTTPS-Pfad entscheidet die SNI über Allowlist
+und Secret-Freigabe, der `Host`-Header im entschlüsselten Request wurde aber nie mit ihr
+verglichen. Ein CDN, das viele Sites auf einer Adresse bedient, routet dann einen Request
+mit erlaubter SNI an eine nie erlaubte Site — und die für die SNI freigegebenen Secrets
+reisen mit (Domain Fronting).
+
+**Was.**
+
+- `--deny-request "METHOD HOST PATH-REGEX"` (wiederholbar, `run` und `gate`): eine Regel
+  pro Eintrag, `METHOD` groß oder `*`, `HOST` ein Glob wie in `--allow-host`, der Regex
+  gegen den bereinigten (`path.Clean`) und kleingeschriebenen Pfad ohne Query. Die Prüfung
+  läuft in `Engine.OnRequest` **vor** der Secret-Ersetzung: der Platzhalter verlässt die VM
+  nicht, die 403-Antwort nennt Methode, Host, Pfad und Regel
+  (`X-Matchlock-Blocked: request denied by policy: POST api.github.com /user/keys (rule …)`).
+  Ein Eintrag, der nicht parst, lässt `NetworkConfig.Validate` scheitern; käme er trotzdem
+  bis zur Engine, wird daraus eine Regel, die alles verweigert — eine kaputte Sperre darf nie
+  als keine Sperre lesen.
+- In `HandleHTTPS` wird nach `ReadRequest` der `Host` (ohne Port, ohne Punkt am Ende,
+  ohne Groß/Klein) mit dem TLS-Servernamen verglichen; weicht er ab, antwortet der Proxy mit
+  403 und `Host header does not match the TLS server name`, protokolliert als `blocked`. Ein
+  leerer `Host` bleibt dem Server überlassen. Ohne SNI steht die Zieladresse als Servername,
+  also muss der `Host` dann ebenfalls die Adresse sein.
+
+**Grenze (dokumentiert).** Die Deny-Liste deckt nur, was sie nennt: GitHubs GraphQL
+(`POST /graphql`), ein `git push` einer Workflow-Datei und GitHub-Enterprise-Hosts bleiben
+offen; ein fein zugeschnittenes Token bleibt die erste Verteidigung. Der Host-Abgleich gilt
+nur im MITM (443); der rohe Passthrough (22 und Co.) sieht keinen Header.
+
+**Upstream-Bezug.** Kein Vorbild in Upstream. Das Muster (Pfadregeln vor der Ersetzung,
+`421`/`403` bei Host ≠ SNI) stammt aus devvms `internal/proxy` (`secrets.go:584-623`,
+`secrets.go:540-578`).
+
+| Datei | Änderung |
+|---|---|
+| `pkg/api/config.go` | `NetworkConfig.DenyRequests`, `ParseDenyRequest`, `ValidateDenyRequests` (in `Validate`) |
+| `pkg/api/errors.go` | `ErrRequestDenied`, `ErrHostMismatch` |
+| `pkg/policy/denyrequest.go` | Regeln kompilieren, Pfad bereinigen, `Engine.deniedRequest` |
+| `pkg/policy/engine.go` | Prüfung in `OnRequest` vor der Ersetzung |
+| `pkg/net/http.go` | `hostMatchesServerName`, Abgleich in `HandleHTTPS` |
+| `cmd/matchlock/cmd_run.go`, `cmd_gate.go` | `--deny-request` |
+| `pkg/policy/denyrequest_test.go`, `pkg/net/http_blocked_test.go` | Regeln (Methode, Glob, Pfadbereinigung, kaputter Eintrag), Host-Abgleich |
+
 ## Installation
 
 ```bash

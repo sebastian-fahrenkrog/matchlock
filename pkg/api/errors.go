@@ -6,10 +6,17 @@ var (
 	ErrBlocked        = errors.New("request blocked by policy")
 	ErrHostNotAllowed = errors.New("host not in allowlist")
 	ErrSecretLeak     = errors.New("secret placeholder sent to unauthorized host")
-	ErrVMNotRunning   = errors.New("VM is not running")
-	ErrVMNotFound     = errors.New("VM not found")
-	ErrTimeout        = errors.New("operation timed out")
-	ErrInvalidConfig  = errors.New("invalid configuration")
+	// ErrRequestDenied: a request on an allowed host that a deny_requests rule
+	// names (patch 10) -- refused before any secret is put in.
+	ErrRequestDenied = errors.New("request denied by policy")
+	// ErrHostMismatch: inside a TLS connection whose server name the allowlist
+	// admitted, a request named another host (patch 10) -- a CDN that serves
+	// many sites on one address would route it to a site that was never allowed.
+	ErrHostMismatch  = errors.New("Host header does not match the TLS server name")
+	ErrVMNotRunning  = errors.New("VM is not running")
+	ErrVMNotFound    = errors.New("VM not found")
+	ErrTimeout       = errors.New("operation timed out")
+	ErrInvalidConfig = errors.New("invalid configuration")
 
 	ErrInvalidVolumeFormat = errors.New("expected format host:guest or host:guest:option[,option...]")
 	ErrResolvePath         = errors.New("failed to resolve path")

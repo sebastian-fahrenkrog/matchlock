@@ -228,6 +228,19 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 		start := time.Now()
 
+		// The allowlist admitted the TLS server name; a request inside that
+		// connection naming another host would let a CDN that serves many
+		// sites on one address route it to a site never allowed, with the
+		// secrets released for the server name riding along (patch 10). An
+		// empty Host is left to the server; a port is ignored.
+		if h := stripPort(req.Host); !hostMatchesServerName(h, serverName) {
+			reason := fmt.Sprintf("%s: %q inside a connection to %q", api.ErrHostMismatch, h, serverName)
+			i.emitBlockedEvent(req, serverName, reason)
+			i.writeRecord(audit.Blocked(i.record(req, serverName), reason))
+			writeBlocked(tlsConn, serverName, reason)
+			return
+		}
+
 		// Vor der Substitution mitschneiden: im Log stehen dann Platzhalter.
 		exchange := i.record(req, serverName)
 
@@ -382,6 +395,16 @@ func (i *HTTPInterceptor) refuseResolved(guestConn net.Conn, exchange *audit.Exc
 }
 
 // stripPort drops a ":port" suffix from a Host header value.
+// hostMatchesServerName says whether a request's Host (port already
+// stripped) may travel inside a TLS connection whose SNI is serverName. An
+// empty Host is left to the server; case and a trailing dot do not count.
+func hostMatchesServerName(host, serverName string) bool {
+	if host == "" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(serverName, "."))
+}
+
 func stripPort(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		return h

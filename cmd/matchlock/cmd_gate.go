@@ -56,6 +56,7 @@ func init() {
 	f.Bool("allow-private-ips", false, "Allow connections to private IP ranges")
 	f.Bool("guard-resolved-ips", false, "Refuse allowed names that resolve to loopback, link-local, metadata or host addresses")
 	f.Bool("dns-allowlist", false, "Answer DNS only for names matching --allow-host")
+	f.StringArray("deny-request", nil, "Refuse a request on an allowed host before any secret is put in: \"METHOD HOST PATH-REGEX\" (repeatable)")
 	f.StringSlice("host-address", nil, "Further addresses the resolved-IP guard treats as the host's own (repeatable)")
 	f.String("audit-db", "", "Record every outbound request into this SQLite file")
 	f.String("record", "", "Record full exchanges as JSONL")
@@ -140,6 +141,7 @@ func parseGateOptions(cmd *cobra.Command) (*gateOptions, error) {
 		BlockPrivateIPs:  !boolean("allow-private-ips"),
 		GuardResolvedIPs: boolean("guard-resolved-ips"),
 		DNSAllowlist:     boolean("dns-allowlist"),
+		DenyRequests:     array("deny-request"),
 		HostAddresses:    slice("host-address"),
 		RecordPath:       str("record"),
 		Secrets:          secrets,

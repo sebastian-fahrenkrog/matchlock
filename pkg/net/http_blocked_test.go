@@ -88,3 +88,18 @@ func TestHandleHTTP_ResolvedLoopbackRefused(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get(blockedHeader), "loopback")
 }
+
+// The HTTPS path dials the upstream (with certificate verification) before it
+// reads the first request, so the Host check cannot be driven end to end
+// without a trusted upstream; the decision itself is a pure function.
+func TestHostMatchesServerName(t *testing.T) {
+	assert.True(t, hostMatchesServerName("", "allowed.example"), "no Host: left to the server")
+	assert.True(t, hostMatchesServerName("allowed.example", "allowed.example"))
+	assert.True(t, hostMatchesServerName("Allowed.Example", "allowed.example"))
+	assert.True(t, hostMatchesServerName("allowed.example.", "allowed.example"))
+	assert.True(t, hostMatchesServerName(stripPort("allowed.example:443"), "allowed.example"))
+	assert.True(t, hostMatchesServerName("203.0.113.7", "203.0.113.7"), "no SNI: the dial address stands in")
+	assert.False(t, hostMatchesServerName("fronted.example", "allowed.example"))
+	assert.False(t, hostMatchesServerName("sub.allowed.example", "allowed.example"))
+	assert.False(t, hostMatchesServerName("fronted.example", "203.0.113.7"))
+}

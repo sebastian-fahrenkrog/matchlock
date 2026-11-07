@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ type Engine struct {
 	placeholders map[string]string
 	networkRules []compiledNetworkRule
 	networkHook  networkHookInvoker
+	denyRequests []denyRequestRule
 
 	// Eigener Mutex, weil OnRequest e.mu bereits als RLock hält.
 	fileMu    sync.Mutex
@@ -44,6 +46,7 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 		placeholders: make(map[string]string),
 		networkRules: compileNetworkRules(config.Interception),
 		networkHook:  newNetworkHookInvoker(config),
+		denyRequests: compileDenyRequests(config.DenyRequests),
 		fileCache:    make(map[string]cachedSecret),
 	}
 
@@ -234,6 +237,13 @@ func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error
 	defer e.mu.RUnlock()
 
 	host = strings.Split(host, ":")[0]
+
+	// A denied request is refused before any secret goes in (patch 10): the
+	// placeholder stays a placeholder, and the reason names the rule so the
+	// agent asks for the right thing instead of probing.
+	if rule := e.deniedRequest(req, host); rule != nil {
+		return nil, fmt.Errorf("%w: %s %s %s (rule %q)", api.ErrRequestDenied, req.Method, host, cleanRequestPath(req), rule.raw)
+	}
 
 	if err := e.applyBeforeNetworkRules(req, host); err != nil {
 		return nil, err
